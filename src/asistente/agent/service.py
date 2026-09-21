@@ -42,7 +42,7 @@ def responder(
         resultado = ejecutar_agente(
             mensaje,
             llm=llm,
-            registro=construir_registro(conn, tz),
+            registro=construir_registro(conn, tz, ahora),
             auditoria=auditoria,
             system_prompt=construir_prompt(ahora, tz),
             historial=historial,

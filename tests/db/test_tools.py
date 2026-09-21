@@ -138,7 +138,7 @@ def test_crear_un_proceso_abierto_duplicado_falla_pero_uno_cerrado_no_estorba(re
 
 def test_buscar_y_listar(reg):
     p = crear(reg, nombre="Compra de notebook")
-    assert p["id"] in [x["id"] for x in reg.invoke("buscar_procesos", {"texto": "notebook"})]
+    assert p["id"] in [x["id"] for x in reg.invoke("listar_procesos", {"texto": "notebook"})]
     assert p["id"] in [x["id"] for x in reg.invoke("listar_procesos", {"estados": ["activo"]})]
 
 
@@ -181,7 +181,8 @@ def test_memoria_se_guarda_como_del_usuario_y_se_busca(reg):
 def test_el_esquema_para_el_llm_incluye_todas_las_tools(reg):
     nombres = {d["function"]["name"] for d in reg.definiciones()}
     assert nombres == {
-        "listar_procesos", "buscar_procesos", "crear_proceso", "actualizar_proceso",
+        "listar_procesos", "listar_agenda", "crear_evento", "actualizar_evento", "habilitar_vigia",
+        "crear_proceso", "actualizar_proceso",
         "agregar_nota_proceso", "ver_historial_proceso", "guardar_memoria",
-        "buscar_memorias", "crear_recordatorio", "listar_temas", "crear_tema", "actualizar_tema",
+        "buscar_memorias", "crear_recordatorio",
     }

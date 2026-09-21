@@ -90,6 +90,7 @@ def test_el_rol_no_puede_borrar_ni_modificar_lo_visto(conn_vigia):
 
 def test_tools_de_temas(conn_vigia):
     reg = construir_registro(conn_vigia, TZ)
+    reg.invoke("habilitar_vigia", {})
     t = reg.invoke("crear_tema", {"nombre": "Papers IA", "query_busqueda": "large language models",
                                   "tipo_contenido": "papers", "hora_preferida": "07:30",
                                   "frecuencia": None, "avisar_sin_novedades": None})
@@ -106,6 +107,7 @@ def test_tools_de_temas(conn_vigia):
 
 def test_temas_por_nombre_y_sin_duplicados(conn_vigia):
     reg = construir_registro(conn_vigia, TZ)
+    reg.invoke("habilitar_vigia", {})
     # Nombre único: los temas reales de la base siguen existiendo (solo se desactivan en el test).
     marca = uuid4().hex[:8]
     nombre = f"Tema de prueba {marca}"
@@ -125,6 +127,7 @@ def test_temas_por_nombre_y_sin_duplicados(conn_vigia):
 
 def test_las_tools_de_temas_rechazan_argumentos_invalidos(conn_vigia):
     reg = construir_registro(conn_vigia, TZ)
+    reg.invoke("habilitar_vigia", {})
     for args in ({"nombre": "x", "query_busqueda": "ab"},  # consulta muy corta
                  {"nombre": "x", "query_busqueda": "consulta", "cantidad_resultados": 99},
                  {"nombre": "x", "query_busqueda": "consulta", "dias_semana": [9]},

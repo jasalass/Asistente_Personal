@@ -33,6 +33,9 @@ class ToolSpec:
     description: str
     handler: Callable[..., Any]
     params: type[BaseModel] | None = None  # esquema de argumentos; None = sin validar
+    # Grupo opcional: sus tools no se muestran ni se pueden invocar hasta que se active el grupo.
+    # Ahorra tokens con las poco usadas (el esquema viaja en cada llamada al modelo).
+    grupo: str | None = None
 
 
 @dataclass(frozen=True)
@@ -86,20 +89,33 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
+        self._grupos_activos: set[str] = set()
 
     def register(self, spec: ToolSpec) -> None:
         if spec.name in self._tools:
             raise ValueError(f"Tool ya registrada: {spec.name}")
         self._tools[spec.name] = spec
 
+    def activar_grupo(self, grupo: str) -> list[str]:
+        """Habilita un grupo de tools; devuelve sus nombres. Solo dura lo que este registro."""
+        if not any(s.grupo == grupo for s in self._tools.values()):
+            raise ValueError(f"Grupo desconocido: {grupo}")
+        self._grupos_activos.add(grupo)
+        return [s.name for s in self._tools.values() if s.grupo == grupo]
+
+    def _visible(self, spec: ToolSpec) -> bool:
+        return spec.grupo is None or spec.grupo in self._grupos_activos
+
     def get(self, name: str) -> ToolSpec:
         spec = self._tools.get(name)
         if spec is None:
             raise ToolDenied(f"Tool no registrada: {name}")
+        if not self._visible(spec):
+            raise ToolDenied(f"La herramienta {name} no está habilitada todavía")
         return spec
 
     def definiciones(self) -> list[dict[str, Any]]:
-        """Esquemas para el LLM. Las tools prohibidas ni siquiera se le muestran."""
+        """Esquemas para el LLM. Ni las prohibidas ni las de grupos sin activar se le muestran."""
         vacio = {"type": "object", "properties": {}}
         return [
             {
@@ -113,7 +129,7 @@ class ToolRegistry:
                 },
             }
             for s in self._tools.values()
-            if s.level is not Level.PROHIBIDO
+            if s.level is not Level.PROHIBIDO and self._visible(s)
         ]
 
     @staticmethod

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -11,8 +11,10 @@ import psycopg
 
 from asistente.agent.loop import ResultadoAgente
 from asistente.agent.service import responder
+from asistente.bloqueo import BloqueoInstancia
 from asistente.config import Settings, get_settings
 from asistente.db.connection import transaccion
+from asistente.db.repos.agenda import EventoRepo
 from asistente.discord_bot.bot import AsistenteBot, ejecutar
 from asistente.discord_bot.despachador import Despachador
 from asistente.heartbeat.runner import latido
@@ -26,7 +28,9 @@ from asistente.vigia.tavily import TavilyBuscador
 log = logging.getLogger(__name__)
 
 
-def construir_bot(cfg: Settings) -> AsistenteBot:
+def construir_bot(
+    cfg: Settings, *, vigilar_bloqueo: Callable[[], bool] | None = None
+) -> AsistenteBot:
     tz = ZoneInfo(cfg.timezone)
     clave_groq = cfg.groq_api_key.get_secret_value()
     # Cada modelo tiene su propio cupo diario (200K tokens): si el principal se agota, el chat pasa
@@ -123,6 +127,7 @@ def construir_bot(cfg: Settings) -> AsistenteBot:
         vigia_ahora=vigia_ahora_fn,
         canal_vigia_id=cfg.discord_canal_vigia_id,
         uso=uso_async,
+        vigilar_bloqueo=vigilar_bloqueo,
     )
 
 
@@ -146,15 +151,33 @@ def tablas_del_vigia_existen() -> bool:
     return True
 
 
+def advertir_si_falta_la_agenda() -> None:
+    with transaccion() as conn:
+        if not EventoRepo(conn).disponible():
+            log.warning(
+                "Faltan las tablas de la agenda: ejecuta supabase/migrations/0004_agenda.sql. "
+                "Mientras tanto no hay eventos recurrentes ni sus avisos."
+            )
+
+
 def verificar_base() -> None:
     """Falla al arrancar, y no al primer mensaje, si la base no está accesible."""
     with transaccion() as conn:
         conn.execute("select 1")
+    advertir_si_falta_la_agenda()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = get_settings()
-    ejecutar(
-        construir_bot(cfg), cfg.discord_token.get_secret_value(), al_iniciar=verificar_base
-    )
+
+    # Solo una instancia activa: si ya hay otra (tu PC y un servidor), esta espera su turno.
+    bloqueo = BloqueoInstancia(cfg.database_url.get_secret_value())
+    bloqueo.esperar()
+    try:
+        bot = construir_bot(cfg, vigilar_bloqueo=bloqueo.vigente)
+        ejecutar(bot, cfg.discord_token.get_secret_value(), al_iniciar=verificar_base)
+        if bot.bloqueo_perdido:
+            raise SystemExit(1)  # salida con error para que el supervisor lo reinicie
+    finally:
+        bloqueo.liberar()

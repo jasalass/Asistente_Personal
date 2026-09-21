@@ -1,12 +1,16 @@
 """Qué merece un aviso ahora mismo. SQL y plantillas: sin LLM, sin costo y sin inyección posible."""
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from asistente.agenda.feriados import CalendarioFeriados, Feriados
+from asistente.agenda.ocurrencias import Ocurrencia, ocurrencia
 from asistente.db.connection import Conn
 from asistente.db.models import EventoTipo, Proceso
+from asistente.db.repos.agenda import EventoRepo
 from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.recordatorios import RecordatorioRepo
@@ -29,14 +33,85 @@ def _sin_accion(_: Conn) -> None:
 
 
 def recolectar(
-    conn: Conn, ahora: datetime, tz: ZoneInfo, *, hora_inicio: int = 8, hora_fin: int = 21
+    conn: Conn,
+    ahora: datetime,
+    tz: ZoneInfo,
+    *,
+    hora_inicio: int = 8,
+    hora_fin: int = 21,
+    feriados: CalendarioFeriados | None = None,
 ) -> list[Aviso]:
-    """Avisos pendientes. Los recordatorios salen a su hora; el resto solo en horario diurno."""
-    avisos = _recordatorios(conn, ahora, tz)
+    """Avisos pendientes.
+
+    Los recordatorios y los avisos previos de eventos salen a su hora, aunque sea de madrugada
+    (dependen de un momento exacto); el resto solo en horario diurno.
+    """
+    feriados = feriados or Feriados()
+    ocurrencias = _ocurrencias_de_hoy(conn, ahora, tz, feriados)
+    avisos = _recordatorios(conn, ahora, tz) + _eventos(conn, ahora, tz, ocurrencias)
     if hora_inicio <= ahora.astimezone(tz).hour < hora_fin:
+        avisos += _eventos_suspendidos(conn, ahora, tz, ocurrencias)
         avisos += _proxima_accion(conn, ahora, tz)
         avisos += _fecha_limite(conn, ahora, tz)
         avisos += _chequeos(conn, ahora)
+    return avisos
+
+
+def _ocurrencias_de_hoy(
+    conn: Conn, ahora: datetime, tz: ZoneInfo, feriados: CalendarioFeriados
+) -> list[Ocurrencia]:
+    hoy = ahora.astimezone(tz).date()
+    repo = EventoRepo(conn)
+    if not repo.disponible():  # migración 0004 sin aplicar: se siguen enviando los demás avisos
+        return []
+    excepciones = repo.excepciones(hoy, hoy)
+    ocurrencias = (ocurrencia(e, hoy, excepciones, feriados) for e in repo.listar(solo_activos=True))
+    return [o for o in ocurrencias if o is not None]
+
+
+def _eventos(
+    conn: Conn, ahora: datetime, tz: ZoneInfo, ocurrencias: list[Ocurrencia]
+) -> list[Aviso]:
+    """Aviso previo de cada evento de hoy (no suspendido), una sola vez."""
+    auditoria = AuditoriaRepo(conn)
+    avisos = []
+    for o in ocurrencias:
+        aviso_min = o.evento.aviso_min_antes
+        if o.suspendida or not aviso_min:
+            continue
+        inicio = o.inicio(tz)
+        if not (inicio - timedelta(minutes=aviso_min) <= ahora < inicio):
+            continue
+        clave = f"ev:{o.evento.id}:{o.fecha.isoformat()}:aviso"
+        if auditoria.aviso_ya_enviado(clave):
+            continue
+        minutos = math.ceil((inicio - ahora).total_seconds() / 60)
+        texto = f"**{o.evento.nombre}** empieza en {minutos} min ({o.evento.hora:%H:%M})."
+        if o.evento.descripcion:
+            texto += f" {o.evento.descripcion}"
+        avisos.append(Aviso(clave=clave, texto=texto, confirmar=_sin_accion))
+    return avisos
+
+
+def _eventos_suspendidos(
+    conn: Conn, ahora: datetime, tz: ZoneInfo, ocurrencias: list[Ocurrencia]
+) -> list[Aviso]:
+    """Por la mañana, avisa de lo que hoy NO ocurre (feriado u omitido), si aún no empezó."""
+    auditoria = AuditoriaRepo(conn)
+    avisos = []
+    for o in ocurrencias:
+        if not o.suspendida or ahora >= o.inicio(tz):
+            continue
+        clave = f"ev:{o.evento.id}:{o.fecha.isoformat()}:suspendido"
+        if auditoria.aviso_ya_enviado(clave):
+            continue
+        avisos.append(
+            Aviso(
+                clave=clave,
+                texto=f"Hoy no hay **{o.evento.nombre}** ({o.motivo}).",
+                confirmar=_sin_accion,
+            )
+        )
     return avisos
 
 

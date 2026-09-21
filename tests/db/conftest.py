@@ -25,6 +25,8 @@ def conn():
             if _hay_tablas_del_vigia(c):
                 # El rol no puede borrar temas (solo desactivarlos): así los reales no participan.
                 c.execute("update temas_seguimiento set activo = false")
+            if _hay_tablas_de_agenda(c):
+                c.execute("update eventos_agenda set activo = false")  # ídem con los eventos
             yield c
         finally:
             c.rollback()  # nunca se hace commit: ni el vaciado ni lo que creó el test persisten
@@ -32,6 +34,18 @@ def conn():
 
 def _hay_tablas_del_vigia(c) -> bool:
     return c.execute("select to_regclass('public.temas_seguimiento') as t").fetchone()["t"] is not None
+
+
+def _hay_tablas_de_agenda(c) -> bool:
+    return c.execute("select to_regclass('public.eventos_agenda') as t").fetchone()["t"] is not None
+
+
+@pytest.fixture
+def conn_agenda(conn):
+    """Como `conn`, pero se omite si aún no se aplicó la migración 0004_agenda.sql."""
+    if not _hay_tablas_de_agenda(conn):
+        pytest.skip("Falta aplicar supabase/migrations/0004_agenda.sql")
+    return conn
 
 
 @pytest.fixture

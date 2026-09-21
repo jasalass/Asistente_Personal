@@ -22,19 +22,26 @@ from tests.fakes import FakeAuditoria, FakeLLM, llamada, texto
 TZ = ZoneInfo("America/Santiago")
 
 
+def registro_completo():
+    """Con el grupo del vigía activado: así se revisan los esquemas de todas las tools."""
+    reg = construir_registro(None, TZ)
+    reg.activar_grupo("vigia")
+    return reg
+
+
 # ---------- esquemas: nada que Groq valide de forma estricta y el modelo no pueda cumplir ----------
 
 
 def test_los_esquemas_no_usan_formatos_date_time_ni_time():
     # Regresión: Groq rechazaba con 400 "08:00" (format: time) y obligaba a agregar un desfase a
     # las fechas (format: date-time), lo que corría las horas. Los formatos `date` sí son seguros.
-    defs = json.dumps(construir_registro(None, TZ).definiciones())
+    defs = json.dumps(registro_completo().definiciones())
     assert '"format": "date-time"' not in defs
     assert '"format": "time"' not in defs
 
 
 def test_las_horas_y_fechas_llegan_como_texto_con_patron():
-    esquema = construir_registro(None, TZ).definiciones()
+    esquema = registro_completo().definiciones()
     props = {d["function"]["name"]: d["function"]["parameters"]["properties"] for d in esquema}
     assert props["crear_tema"]["hora_preferida"]["type"] == "string"
     assert props["crear_tema"]["hora_preferida"]["pattern"]
@@ -74,7 +81,7 @@ def test_fechas_en_otros_formatos_se_rechazan(fecha):
 
 
 def test_avisar_sin_novedades_solo_si_el_usuario_lo_pide():
-    esquema = construir_registro(None, TZ).definiciones()
+    esquema = registro_completo().definiciones()
     crear = next(d for d in esquema if d["function"]["name"] == "crear_tema")
     descripcion = crear["function"]["parameters"]["properties"]["avisar_sin_novedades"]["description"]
     assert "expresamente" in descripcion

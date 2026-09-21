@@ -1,5 +1,7 @@
 import asyncio
+import contextlib
 import logging
+import socket
 from collections.abc import Awaitable, Callable
 
 import discord
@@ -74,6 +76,8 @@ class AsistenteBot(discord.Client):
         vigia_ahora: VigiaAhora | None = None,
         canal_vigia_id: int | None = None,
         uso: Callable[[], Awaitable[str]] | None = None,
+        vigilar_bloqueo: Callable[[], bool] | None = None,
+        host: str | None = None,
     ) -> None:
         super().__init__(intents=crear_intents(), allowed_mentions=SIN_MENCIONES)
         self._despachador = despachador
@@ -84,6 +88,11 @@ class AsistenteBot(discord.Client):
         self._vigia_ahora = vigia_ahora
         self._canal_vigia_id = canal_vigia_id
         self._uso = uso
+        self._vigilar_bloqueo = vigilar_bloqueo
+        self._host = host or socket.gethostname()
+        self._avisado_inicio = False
+        self._avisado_cierre = False
+        self.bloqueo_perdido = False  # el proceso debe terminar con error para que lo reinicien
         self._tareas: list[asyncio.Task[None]] = []
         self.tree = _Arbol(self, allowlist)
         self._registrar_comandos()
@@ -107,9 +116,37 @@ class AsistenteBot(discord.Client):
         await self.wait_until_ready()
         await tarea()
 
+    async def _avisar(self, texto: str) -> None:
+        """Aviso de estado en el canal de avisos. Nunca lanza: es informativo."""
+        if self._canal_avisos_id is None:
+            return
+        try:
+            await self.enviar_aviso(texto)
+        except Exception:
+            log.warning("No se pudo publicar el aviso de estado", exc_info=True)
+
+    async def _vigilar(self, intervalo_s: float = 60.0) -> None:
+        """Si se pierde el bloqueo de instancia única, se detiene: mejor caer que duplicar."""
+        while True:
+            await asyncio.sleep(intervalo_s)
+            if not await asyncio.to_thread(self._vigilar_bloqueo):
+                log.critical("Se perdió el bloqueo de instancia única: el proceso se detiene")
+                self.bloqueo_perdido = True
+                await self.close()
+                return
+
     async def close(self) -> None:
+        if self._avisado_inicio and not self._avisado_cierre:
+            self._avisado_cierre = True
+            motivo = "otra instancia tomó el control" if self.bloqueo_perdido else "apagado normal"
+            with contextlib.suppress(Exception):  # incluye el tiempo de espera agotado
+                await asyncio.wait_for(
+                    self._avisar(f"Asistente detenido en {self._host} ({motivo})."), timeout=5
+                )
+        actual = asyncio.current_task()
         for t in self._tareas:
-            t.cancel()
+            if t is not actual:  # el vigilante se llama a sí mismo: no puede cancelarse a medias
+                t.cancel()
         await super().close()
 
     def _registrar_comandos(self) -> None:
@@ -174,9 +211,14 @@ class AsistenteBot(discord.Client):
             self._tareas.append(
                 asyncio.create_task(self._correr(lambda: self._vigia(self.publicar_vigia)))
             )
+        if self._vigilar_bloqueo is not None:
+            self._tareas.append(asyncio.create_task(self._vigilar()))
 
     async def on_ready(self) -> None:
         log.info("Conectado como %s", self.user)
+        if not self._avisado_inicio:  # on_ready también se dispara en cada reconexión
+            self._avisado_inicio = True
+            await self._avisar(f"Asistente en línea en {self._host}.")
 
     async def on_message(self, message: discord.Message) -> None:
         datos = {

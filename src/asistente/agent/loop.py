@@ -45,13 +45,13 @@ def ejecutar_agente(
         *historial,
         {"role": "user", "content": mensaje},
     ]
-    tools = registro.definiciones()
     resultado = ResultadoAgente(respuesta=MSG_SIN_RESPUESTA)
 
     for _ in range(max_pasos):
         resultado.pasos += 1
         try:
-            r = llm.chat(messages, tools)
+            # Se recalcula en cada paso: una tool puede habilitar un grupo (p. ej. el vigía).
+            r = llm.chat(messages, registro.definiciones())
         except ToolCallRechazado as e:
             # El proveedor rechazó los argumentos por el esquema: se le informa para que corrija.
             auditoria.registrar("agente", "llm:tool_call_rechazado", {"motivo": str(e)})

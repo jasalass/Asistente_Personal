@@ -25,6 +25,14 @@ class RecordatorioRepo:
         ).fetchall()
         return [Recordatorio.model_validate(f) for f in filas]
 
+    def entre(self, desde: datetime, hasta: datetime) -> list[Recordatorio]:
+        """Recordatorios con fecha en [desde, hasta), enviados o no (para mostrar la agenda)."""
+        filas = self._conn.execute(
+            "select * from recordatorios where fecha >= %s and fecha < %s order by fecha",
+            (desde, hasta),
+        ).fetchall()
+        return [Recordatorio.model_validate(f) for f in filas]
+
     def marcar_enviado(self, recordatorio_id: UUID) -> None:
         self._conn.execute(
             "update recordatorios set enviado = true where id = %s", (recordatorio_id,)

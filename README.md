@@ -80,6 +80,8 @@ pip install -e ".[dev]"
    - [`supabase/migrations/0002_rol_bot.sql`](supabase/migrations/0002_rol_bot.sql)
    - [`supabase/migrations/0003_vigia.sql`](supabase/migrations/0003_vigia.sql) (tablas del vigía de
      temas; sin ella el vigía queda desactivado y lo avisa en el log al arrancar)
+   - [`supabase/migrations/0004_agenda.sql`](supabase/migrations/0004_agenda.sql) (eventos recurrentes
+     y sus excepciones por fecha)
 3. Ejecuta aparte, con una contraseña larga y aleatoria (no se guarda en el repo):
    ```sql
    alter role asistente_bot with password 'TU_CONTRASEÑA';
@@ -178,6 +180,38 @@ son consultas SQL y mensajes con plantilla, así que no gasta cuota de Groq ni p
   repetirlo. Se registra solo si Discord confirmó el envío; si falla, se reintenta al ciclo siguiente.
 - Con `/pausa` no envía nada. Los procesos completados o cancelados no generan avisos.
 
+### Agenda: eventos recurrentes y "qué tengo hoy"
+
+Le dices, por ejemplo, *"los lunes tengo clases de Matemática a las 20:30"* y crea un **evento semanal**:
+"todos los lunes" son todos los lunes. `listar_agenda` responde "qué tengo hoy / mañana / esta semana"
+(hasta 14 días) juntando eventos, recordatorios, próximas acciones y fechas límite de tus procesos,
+ordenados por hora y con los feriados marcados.
+
+- **Feriados de Chile** (librería `holidays`): por defecto un evento **se suspende en feriados**. Al
+  crearlo el asistente te muestra las próximas fechas, incluidas las suspendidas ("lunes 12/10 20:30
+  SUSPENDIDA, feriado: Día del Encuentro de Dos Mundos"). Se puede desactivar por evento.
+- **Excepciones por fecha**: `omitir_fecha` ("ese lunes no hay clases") o `mantener_fecha` ("ese lunes sí
+  hay, aunque sea feriado"). También vigencia opcional (inicio y fin de semestre).
+- **Avisos** (heartbeat, sin gastar tokens): 60 minutos antes de cada evento (configurable, o ninguno),
+  a su hora aunque sea de madrugada, y por la mañana te cuenta si algo de hoy queda suspendido.
+- Límites: los feriados son los legales; no incluyen decretos de última hora ni los recesos de tu
+  universidad o trabajo, para eso están las excepciones. Los eventos se pausan (`activo: false`), no se borran.
+
+### Instancia única y avisos de estado
+
+Solo **un** proceso del asistente puede estar activo a la vez (un bloqueo de sesión en Postgres). Si
+arrancas uno mientras hay otro corriendo (tu PC y un servidor, por ejemplo), el nuevo **se queda en
+espera** sin conectarse a Discord y toma el control solo si el primero cae, en menos de 30 s. Si un
+proceso pierde el bloqueo (corte de la conexión a la base), se detiene con error para que su supervisor
+lo reinicie: es preferible caer a responder por duplicado.
+
+- Requiere una conexión de **sesión** a la base (el Session pooler de Supabase lo es).
+- Al arrancar y al apagarse con normalidad, el bot publica un aviso en `#avisos` con el nombre del
+  equipo (`Asistente en línea en <equipo>`). Una caída brusca no puede avisar; se nota porque el aviso
+  de arranque aparece de nuevo cuando el supervisor lo reinicia.
+- Para **actualizar** el bot en un servidor sin duplicar, basta con arrancar la versión nueva: espera
+  a que termine la vieja.
+
 ### Consumo y límites de Groq
 
 El plan gratuito de Groq limita **cada modelo** a **8.000 tokens por minuto y 200.000 por día** (mira
@@ -193,6 +227,9 @@ para unas 25 a 35 conversaciones al día.
 - Menos llamadas por mensaje: los procesos y temas se indican por **nombre** (sin buscar antes), las
   tools detectan duplicados por su cuenta y `actualizar_proceso` acepta una `nota` en la misma llamada.
 - El vigía usa el modelo chico y deja registrados sus tokens en cada corrida.
+- **Herramientas bajo demanda:** las del vigía (y sus instrucciones) no viajan en cada llamada al
+  modelo: `habilitar_vigia` las carga solo cuando hablas de temas. Ahorra ~4.000 caracteres fijos por
+  llamada a costa de una llamada extra cuando las necesitas.
 
 ### Vigía de temas
 
@@ -237,6 +274,7 @@ vigía publica en `#vigia-temas` un embed por artículo: **título, resumen y li
 │   ├── discord_bot/         # bot, despachador con allowlist, historial, comandos de pausa
 │   ├── heartbeat/           # reglas de avisos (SQL + plantillas) y ciclo de envío
 │   ├── vigia/               # búsqueda (Tavily), calendario, URLs, resumidor aislado y ciclo
+│   ├── agenda/              # feriados, ocurrencias de eventos (suspensión, excepciones) y consulta
 │   ├── gateway.py           # arranque: `python -m asistente`
 │   └── db/                  # conexión, modelos y repositorios
 │       └── repos/           # procesos, memorias, recordatorios, auditoría, kill switch
@@ -253,5 +291,7 @@ vigía publica en `#vigia-temas` un embed por artículo: **título, resumen y li
 - [ ] Persistencia de aprobaciones (`acciones_pendientes`) y botones Aprobar/Rechazar en Discord
 - [x] Heartbeat: chequeo proactivo de procesos y recordatorios
 - [x] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
+- [x] Agenda: eventos recurrentes con feriados, excepciones por fecha, `listar_agenda` y avisos previos
+- [ ] Brief matutino en `#brief` con la agenda del día
 - [ ] Google Calendar / Gmail, Microsoft Graph
 - [ ] Acciones acotadas con guardrails (whitelist, modo "propone, no ejecuta", auditoría)

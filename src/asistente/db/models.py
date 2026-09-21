@@ -170,6 +170,64 @@ class TemaActualizacion(BaseModel):
     activo: bool | None = None
 
 
+class AccionExcepcion(StrEnum):
+    OMITIR = "omitir"  # ese día no ocurre
+    MANTENER = "mantener"  # ese día ocurre aunque sea feriado
+
+
+def _dias_ordenados(v: list[int] | None) -> list[int] | None:
+    return sorted(set(v)) if v is not None else None
+
+
+class EventoNuevo(BaseModel):
+    """Evento semanal recurrente. `dias_semana`: 1 = lunes ... 7 = domingo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str = Field(min_length=1, max_length=120)
+    descripcion: str | None = Field(default=None, max_length=500)
+    dias_semana: list[Annotated[int, Field(ge=1, le=7)]] = Field(min_length=1)
+    hora: time
+    duracion_min: int | None = Field(default=None, ge=1, le=1440)
+    aviso_min_antes: int | None = Field(default=60, ge=0, le=1440)  # None o 0 = sin aviso
+    suspender_feriados: bool = True
+    vigente_desde: date | None = None
+    vigente_hasta: date | None = None
+    activo: bool = True
+
+    @model_validator(mode="after")
+    def _coherente(self) -> "EventoNuevo":
+        self.dias_semana = _dias_ordenados(self.dias_semana)
+        if self.vigente_desde and self.vigente_hasta and self.vigente_hasta < self.vigente_desde:
+            raise ValueError("vigente_hasta no puede ser anterior a vigente_desde")
+        return self
+
+
+class Evento(EventoNuevo):
+    model_config = ConfigDict(extra="ignore")
+
+    id: UUID
+    creado_en: datetime
+    actualizado_en: datetime
+
+
+class EventoActualizacion(BaseModel):
+    """Campos editables. Lo no informado no se toca."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    descripcion: str | None = Field(default=None, max_length=500)
+    dias_semana: list[Annotated[int, Field(ge=1, le=7)]] | None = Field(default=None, min_length=1)
+    hora: time | None = None
+    duracion_min: int | None = Field(default=None, ge=1, le=1440)
+    aviso_min_antes: int | None = Field(default=None, ge=0, le=1440)
+    suspender_feriados: bool | None = None
+    vigente_desde: date | None = None
+    vigente_hasta: date | None = None
+    activo: bool | None = None
+
+
 class Recordatorio(BaseModel):
     id: UUID
     texto: str

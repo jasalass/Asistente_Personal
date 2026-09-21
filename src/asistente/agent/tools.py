@@ -3,15 +3,29 @@
 Nada acá contacta a terceros ni gasta dinero; eso, cuando exista, se registra como PROPONE.
 """
 
-from datetime import date, datetime, time
+import unicodedata
+from datetime import date, datetime, time, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from asistente.agenda.consulta import consultar, formatear
+from asistente.agenda.feriados import CalendarioFeriados, Feriados
+from asistente.agenda.ocurrencias import (
+    DIAS,
+    advertencia_de_vigencia,
+    describir,
+    nombre_dia,
+    proximas,
+)
+from asistente.agent.prompt import WORKSPACE
 from asistente.db.connection import Conn
 from asistente.db.models import (
+    AccionExcepcion,
+    EventoActualizacion,
+    EventoNuevo,
     EventoTipo,
     MemoriaOrigen,
     Prioridad,
@@ -21,6 +35,7 @@ from asistente.db.models import (
     TemaActualizacion,
     TemaNuevo,
 )
+from asistente.db.repos.agenda import EventoRepo
 from asistente.db.repos.memorias import MemoriaRepo
 from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.recordatorios import RecordatorioRepo
@@ -28,6 +43,14 @@ from asistente.db.repos.temas import TemaRepo
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
 
 _CERRADOS = (ProcesoEstado.COMPLETADO, ProcesoEstado.CANCELADO)
+
+GRUPO_VIGIA = "vigia"
+_TOOLS_DEL_VIGIA = frozenset({"listar_temas", "crear_tema", "actualizar_tema"})
+
+
+def leer_skill(nombre: str) -> str:
+    """Instrucciones bajo demanda (workspace/skills/bajo_demanda), de solo lectura."""
+    return (WORKSPACE / "skills" / "bajo_demanda" / f"{nombre}.md").read_text(encoding="utf-8")
 
 # Campos de texto que el LLM puede vaciar enviando "" (un null suele significar "no lo mencioné").
 _TEXTO_BORRABLE = ("descripcion", "proxima_accion", "esperando_a", "bloqueo_detalle")
@@ -114,11 +137,8 @@ class ListarProcesosArgs(_SinNulos):
     estados: list[ProcesoEstado] | None = Field(
         default=None, description="Filtrar por estado. Sin valor: todos."
     )
+    texto: str | None = Field(default=None, min_length=1, description="Buscar por parte del nombre")
     limite: int = Field(default=20, ge=1, le=50)
-
-
-class BuscarProcesosArgs(_SinNulos):
-    texto: str = Field(min_length=1, description="Parte del nombre del proceso")
 
 
 class AgregarNotaArgs(_RefProceso):
@@ -163,10 +183,94 @@ class CrearRecordatorioArgs(_SinNulos):
     fecha: FechaHoraLocal
 
 
-def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
+class CrearEventoArgs(_SinNulos):
+    nombre: str = Field(min_length=1, max_length=120)
+    dias: list[str] = Field(min_length=1, description="lunes, martes, miércoles... (uno o varios)")
+    hora: HoraLocal
+    duracion_min: int | None = Field(default=None, ge=1, le=1440)
+    aviso_min_antes: int | None = Field(
+        default=None, ge=0, le=1440, description="Minutos antes para avisar; 60 si no se indica, 0 = sin aviso"
+    )
+    suspender_feriados: bool | None = Field(
+        default=None, description="true por defecto; false solo si ocurre aunque sea feriado"
+    )
+    desde: date | None = Field(
+        default=None,
+        description="SOLO si el usuario dio una fecha de inicio; si no, omitir (aplica desde hoy). YYYY-MM-DD",
+    )
+    hasta: date | None = Field(
+        default=None, description="SOLO si el usuario dio una fecha de término; si no, omitir. YYYY-MM-DD"
+    )
+    descripcion: str | None = Field(default=None, max_length=500, description="Lugar, sala, enlace...")
+
+
+class _RefEvento(_SinNulos):
+    id: UUID | None = Field(default=None, description="Id del evento, si ya lo conoces")
+    evento: str | None = Field(default=None, min_length=1, description="Nombre (o parte) del evento")
+
+    @model_validator(mode="after")
+    def _uno_solo(self) -> "_RefEvento":
+        if (self.id is None) == (self.evento is None):
+            raise ValueError("indica el evento con 'id' o con 'evento' (solo uno)")
+        return self
+
+
+class ActualizarEventoArgs(_RefEvento):
+    nombre: str | None = Field(default=None, min_length=1, max_length=120)
+    dias: list[str] | None = Field(default=None, min_length=1)
+    hora: HoraLocal | None = None
+    duracion_min: int | None = Field(default=None, ge=1, le=1440)
+    aviso_min_antes: int | None = Field(default=None, ge=0, le=1440)
+    suspender_feriados: bool | None = None
+    desde: date | None = Field(default=None, description="Solo si el usuario lo pidió. YYYY-MM-DD")
+    hasta: date | None = Field(default=None, description="Solo si el usuario lo pidió. YYYY-MM-DD")
+    descripcion: str | None = Field(default=None, max_length=500)
+    activo: bool | None = None
+    omitir_fecha: date | None = Field(default=None, description="Ese día no hay evento (YYYY-MM-DD)")
+    mantener_fecha: date | None = Field(
+        default=None, description="Ese día sí hay evento, aunque sea feriado (YYYY-MM-DD)"
+    )
+    motivo: str | None = Field(default=None, max_length=200)
+
+
+class ListarAgendaArgs(_SinNulos):
+    desde: date | None = Field(default=None, description="Primer día (YYYY-MM-DD); hoy si no se indica")
+    dias: int = Field(default=1, ge=1, le=14, description="Cuántos días mostrar")
+
+
+def _sin_tildes(texto: str) -> str:
+    return "".join(
+        c for c in unicodedata.normalize("NFD", texto.casefold()) if unicodedata.category(c) != "Mn"
+    )
+
+
+_NUMERO_DE_DIA = {_sin_tildes(d): i for i, d in enumerate(DIAS, start=1)}
+
+
+def dias_a_numeros(nombres: list[str]) -> list[int]:
+    """'lunes' -> 1 ... 'domingo' -> 7 (ISO). Acepta con o sin tilde y en cualquier caso."""
+    numeros = []
+    for n in nombres:
+        numero = _NUMERO_DE_DIA.get(_sin_tildes(n.strip()))
+        if numero is None:
+            raise ToolError(f"'{n}' no es un día de la semana (lunes, martes, miércoles...).")
+        numeros.append(numero)
+    return sorted(set(numeros))
+
+
+def construir_registro(
+    conn: Conn,
+    tz: ZoneInfo,
+    ahora: datetime | None = None,
+    feriados: CalendarioFeriados | None = None,
+) -> ToolRegistry:
     """Registro con todas las tools atadas a una conexión (una unidad de trabajo)."""
     procesos, memorias, recordatorios = ProcesoRepo(conn), MemoriaRepo(conn), RecordatorioRepo(conn)
-    temas = TemaRepo(conn)
+    temas, eventos = TemaRepo(conn), EventoRepo(conn)
+    feriados = feriados or Feriados()
+
+    def hoy() -> date:
+        return (ahora or datetime.now(tz)).astimezone(tz).date()
 
     def con_zona(dt: datetime | None) -> datetime | None:
         """Toma la hora tal como se dijo, en la zona del usuario, y descarta cualquier desfase.
@@ -212,11 +316,9 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
             temas.buscar_por_nombre(tema, limite=8), tema, lambda t: not t.activo, "tema", "listar_temas"
         )
 
-    def listar_procesos(estados=None, limite=20):
-        return [p.model_dump(mode="json") for p in procesos.listar(estados, limite)]
-
-    def buscar_procesos(texto):
-        return [p.model_dump(mode="json") for p in procesos.buscar_por_nombre(texto)]
+    def listar_procesos(estados=None, limite=20, texto=None):
+        lista = procesos.buscar_por_nombre(texto, limite) if texto else procesos.listar(estados, limite)
+        return [p.model_dump(mode="json") for p in lista]
 
     def crear_proceso(**campos):
         nombre = campos["nombre"]
@@ -284,19 +386,132 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
             # Solo el motivo: p. ej. "cada_x_dias requiere intervalo_dias".
             raise ToolError("; ".join(err["msg"] for err in e.errors())) from None
 
+    def resolver_evento(id=None, evento=None):
+        if id is not None:
+            e = eventos.obtener(id)
+            if e is None:
+                raise ToolError("No existe un evento con ese id. Usa listar_agenda.")
+            return e
+        return elegir(
+            eventos.buscar_por_nombre(evento, limite=8), evento, lambda e: not e.activo,
+            "evento", "listar_agenda",
+        )
+
+    def con_proximas(e) -> dict:
+        """El evento más sus próximas ocurrencias (con las suspendidas), para confirmar con precisión."""
+        inicio_dia = hoy()
+        excepciones = eventos.excepciones(inicio_dia, inicio_dia + timedelta(days=120))
+        ahora_local = (ahora or datetime.now(tz)).astimezone(tz)
+        futuras = [
+            o for o in proximas(e, inicio_dia, excepciones, feriados, cuantas=5)
+            if o.inicio(tz) > ahora_local
+        ][:4]
+        resultado = e.model_dump(mode="json")
+        resultado["resumen"] = describir(e)  # lo que quedó guardado, redactado por el código
+        if aviso := advertencia_de_vigencia(e, inicio_dia):
+            resultado["advertencia"] = aviso
+        resultado["proximas"] = [
+            f"{nombre_dia(o.fecha)} {o.fecha:%d/%m} {e.hora:%H:%M}"
+            + (f" SUSPENDIDA ({o.motivo})" if o.suspendida else "")
+            for o in futuras
+        ]
+        return resultado
+
+    def exigir_agenda() -> None:
+        if not eventos.disponible():
+            raise ToolError(
+                "La agenda de eventos aún no está disponible: falta aplicar la migración 0004_agenda.sql."
+            )
+
+    def crear_evento(**campos):
+        exigir_agenda()
+        nombre = campos["nombre"]
+        for e in eventos.buscar_por_nombre(nombre, limite=8):
+            if e.nombre.casefold() == nombre.casefold():
+                estado = "activo" if e.activo else "pausado"
+                raise ToolError(f"Ya existe el evento '{e.nombre}' ({estado}). Usa actualizar_evento.")
+        datos = {
+            "nombre": nombre,
+            "descripcion": campos.get("descripcion"),
+            "dias_semana": dias_a_numeros(campos["dias"]),
+            "hora": time.fromisoformat(campos["hora"]),
+            "duracion_min": campos.get("duracion_min"),
+            "aviso_min_antes": campos.get("aviso_min_antes", 60),
+            "suspender_feriados": campos.get("suspender_feriados", True),
+            "vigente_desde": campos.get("desde"),
+            "vigente_hasta": campos.get("hasta"),
+        }
+        try:
+            return con_proximas(eventos.crear(EventoNuevo(**datos)))
+        except ValidationError as e:
+            raise ToolError("; ".join(err["msg"] for err in e.errors())) from None
+
+    def actualizar_evento(id=None, evento=None, **campos):
+        exigir_agenda()
+        ev = resolver_evento(id, evento)
+        omitir, mantener = campos.pop("omitir_fecha", None), campos.pop("mantener_fecha", None)
+        motivo = campos.pop("motivo", None)
+        if omitir is not None and omitir == mantener:
+            raise ToolError("La misma fecha no puede omitirse y mantenerse a la vez.")
+        if "dias" in campos:
+            campos["dias_semana"] = dias_a_numeros(campos.pop("dias"))
+        if "hora" in campos:
+            campos["hora"] = time.fromisoformat(campos["hora"])
+        for corto, largo in (("desde", "vigente_desde"), ("hasta", "vigente_hasta")):
+            if corto in campos:
+                campos[largo] = campos.pop(corto)
+        try:
+            actualizado = eventos.actualizar(ev.id, EventoActualizacion(**campos)) or ev
+        except ValidationError as e:
+            raise ToolError("; ".join(err["msg"] for err in e.errors())) from None
+        if omitir is not None:
+            eventos.registrar_excepcion(ev.id, omitir, AccionExcepcion.OMITIR, motivo)
+        if mantener is not None:
+            eventos.registrar_excepcion(ev.id, mantener, AccionExcepcion.MANTENER, motivo)
+        return con_proximas(actualizado)
+
+    def listar_agenda(desde=None, dias=1):
+        return formatear(consultar(conn, desde or hoy(), dias, tz, feriados))
+
+    def habilitar_vigia():
+        """Las tools y las instrucciones del vigía se cargan solo si hacen falta: ahorra tokens."""
+        habilitadas = registro.activar_grupo(GRUPO_VIGIA)
+        return {"habilitadas": habilitadas, "instrucciones": leer_skill("vigia")}
+
     registro = ToolRegistry()
     for nombre, descripcion, handler, params in [
         (
             "listar_procesos",
-            "Lista los procesos por prioridad ('qué tengo pendiente').",
+            "Lista los procesos por prioridad, o los que coincidan con 'texto' en el nombre.",
             listar_procesos,
             ListarProcesosArgs,
         ),
         (
-            "buscar_procesos",
-            "Busca procesos por parte del nombre.",
-            buscar_procesos,
-            BuscarProcesosArgs,
+            "listar_agenda",
+            (
+                "Agenda de uno o más días (hasta 14): eventos, recordatorios y procesos con fecha, "
+                "con los feriados. Úsala para 'qué tengo hoy/mañana/esta semana'."
+            ),
+            listar_agenda,
+            ListarAgendaArgs,
+        ),
+        (
+            "crear_evento",
+            (
+                "Crea un evento semanal recurrente (clases, reuniones fijas): 'todos los lunes' = "
+                "dias ['lunes']. Se suspende en feriados y avisa 60 min antes salvo que se indique."
+            ),
+            crear_evento,
+            CrearEventoArgs,
+        ),
+        (
+            "actualizar_evento",
+            (
+                "Modifica o pausa (activo=false) un evento ('id' o 'evento'), o cambia una fecha: "
+                "omitir_fecha (ese día no hay) o mantener_fecha (ese día sí, aunque sea feriado)."
+            ),
+            actualizar_evento,
+            ActualizarEventoArgs,
         ),
         (
             "crear_proceso",
@@ -324,7 +539,7 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
         ),
         (
             "guardar_memoria",
-            "Guarda un dato o preferencia que no encaja en un proceso.",
+            "Guarda un dato o preferencia suelta. No para horarios, fechas ni procesos.",
             guardar_memoria,
             GuardarMemoriaArgs,
         ),
@@ -339,6 +554,15 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
             "Crea un recordatorio para una fecha y hora.",
             crear_recordatorio,
             CrearRecordatorioArgs,
+        ),
+        (
+            "habilitar_vigia",
+            (
+                "Habilita las herramientas del vigía de temas (crear, listar y pausar temas que se "
+                "siguen en la web) y devuelve sus instrucciones. Llámala antes de gestionar temas."
+            ),
+            habilitar_vigia,
+            None,
         ),
         (
             "listar_temas",
@@ -359,5 +583,6 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
             ActualizarTemaArgs,
         ),
     ]:
-        registro.register(ToolSpec(nombre, Level.AUTO, descripcion, handler, params))
+        grupo = GRUPO_VIGIA if nombre in _TOOLS_DEL_VIGIA else None
+        registro.register(ToolSpec(nombre, Level.AUTO, descripcion, handler, params, grupo))
     return registro
