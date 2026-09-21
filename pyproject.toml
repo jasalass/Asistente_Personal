@@ -1,0 +1,32 @@
+[project]
+name = "asistente"
+version = "0.1.0"
+description = "Asistente personal multi-agente (chief of staff) con guardrails de autoridad"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "psycopg[binary]>=3.2,<4",
+    "tzdata>=2024.1",  # Windows no incluye la base de zonas horarias
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
