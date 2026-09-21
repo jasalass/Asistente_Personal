@@ -22,6 +22,13 @@ class Settings(BaseSettings):
 
     timezone: str = "America/Santiago"
 
+    @field_validator("groq_api_key", "tavily_api_key", "database_url", "discord_token")
+    @classmethod
+    def _secreto_no_vacio(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value().strip():
+            raise ValueError("no puede estar vacío")
+        return v
+
     @field_validator("discord_channel_ids", mode="before")
     @classmethod
     def _parse_channel_ids(cls, v: object) -> object:

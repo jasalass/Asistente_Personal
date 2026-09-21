@@ -32,6 +32,14 @@ def test_falta_un_secreto_falla_al_arrancar():
         Settings(_env_file=None, **datos, discord_channel_ids="10")
 
 
+@pytest.mark.parametrize(
+    "campo", ["groq_api_key", "tavily_api_key", "database_url", "discord_token"]
+)
+def test_secreto_vacio_falla_al_arrancar(campo):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{**BASE, campo: "  "}, discord_channel_ids="10")
+
+
 def test_timezone_invalida():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **BASE, discord_channel_ids="10", timezone="Marte/Olympus")
