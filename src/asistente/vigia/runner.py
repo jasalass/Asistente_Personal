@@ -13,6 +13,7 @@ from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
 from asistente.db.repos.temas import ArticuloRepo, TemaRepo
 from asistente.llm.base import LLM, LLMNoDisponible
+from asistente.llm.combinadores import ContadorLLM
 from asistente.vigia.programacion import toca
 from asistente.vigia.resumen import resumir, sanear
 from asistente.vigia.tavily import Buscador, BusquedaFallida
@@ -62,6 +63,7 @@ async def ejecutar_tema(
     """
     inicio = time.monotonic()
     res = ResultadoTema()
+    llm = ContadorLLM(llm)  # para dejar registrado cuántos tokens gastó cada corrida
 
     async def en_hilo(fn, *args):
         return await asyncio.to_thread(fn, *args)
@@ -135,6 +137,8 @@ async def ejecutar_tema(
             AuditoriaRepo(conn).registrar_ejecucion(
                 "vigia",
                 duracion_ms=int((time.monotonic() - inicio) * 1000),
+                tokens_in=llm.tokens_in,
+                tokens_out=llm.tokens_out,
                 error=res.error,
                 detalle={
                     "tema": tema.nombre,

@@ -25,6 +25,8 @@ class ResultadoAgente:
     tokens_in: int = 0
     tokens_out: int = 0
     pasos: int = 0
+    usa_respaldo: bool = False  # alguna llamada la atendió un modelo de respaldo
+    modelos: set[str] = field(default_factory=set)
 
 
 def ejecutar_agente(
@@ -65,6 +67,9 @@ def ejecutar_agente(
             continue
         resultado.tokens_in += r.tokens_in
         resultado.tokens_out += r.tokens_out
+        resultado.usa_respaldo = resultado.usa_respaldo or r.respaldo
+        if r.modelo:
+            resultado.modelos.add(r.modelo)
 
         if not r.tool_calls:
             resultado.respuesta = (r.contenido or "").strip() or "Listo."

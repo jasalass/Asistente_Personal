@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # Llama 3.x ya no está en el catálogo de Groq; estos dos pasaron la prueba de tool calling.
     modelo_agente: str = "openai/gpt-oss-120b"
     modelo_resumen: str = "openai/gpt-oss-20b"
+    # Respaldo del chat cuando el principal agota su cupo diario. Vacío = sin respaldo.
+    modelo_respaldo: str = "openai/gpt-oss-20b"
+    # Solo para /uso: el tope diario de tokens por modelo en el plan gratuito de Groq.
+    groq_limite_diario_tokens: int = 200_000
 
     @field_validator("groq_api_key", "tavily_api_key", "database_url", "discord_token")
     @classmethod

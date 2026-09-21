@@ -7,6 +7,8 @@ from asistente.llm.base import LLMNoDisponible, LLMRespuesta, ToolCall, ToolCall
 
 _RECHAZOS_CORREGIBLES = ("tool_use_failed", "json_validate_failed")
 _REINTENTOS = 2
+# Esperar sirve para el límite por minuto (segundos). Si Groq pide esperar más, es el cupo diario
+# agotado: dormir no ayuda, y es mejor fallar de inmediato para que otro modelo tome el mensaje.
 _ESPERA_MAX_S = 30.0
 
 
@@ -47,9 +49,14 @@ class GroqLLM:
                 # corregirse si se le dice qué falló (sin el texto que generó).
                 raise ToolCallRechazado(str(cuerpo.get("message", "esquema inválido"))[:300]) from None
             except groq.RateLimitError as e:
+                espera = _espera(e)
+                if espera > _ESPERA_MAX_S:
+                    raise LLMNoDisponible(
+                        f"Cupo de {self._modelo} agotado (Groq pide esperar {int(espera)} s)"
+                    ) from None
                 if intento == _REINTENTOS:
-                    raise LLMNoDisponible("Límite de uso de Groq alcanzado") from None
-                time.sleep(_espera(e))
+                    raise LLMNoDisponible(f"Límite de uso de {self._modelo} alcanzado") from None
+                time.sleep(espera)
             except (groq.APIConnectionError, groq.InternalServerError):
                 if intento == _REINTENTOS:
                     raise LLMNoDisponible("Groq no responde") from None
@@ -64,11 +71,13 @@ class GroqLLM:
             ],
             tokens_in=r.usage.prompt_tokens if r.usage else 0,
             tokens_out=r.usage.completion_tokens if r.usage else 0,
+            modelo=self._modelo,
         )
 
 
 def _espera(e: groq.RateLimitError) -> float:
+    """Segundos que Groq pide esperar (cabecera retry-after); 5 si no la trae o es ilegible."""
     try:
-        return min(float(e.response.headers.get("retry-after", 5)), _ESPERA_MAX_S)
+        return float(e.response.headers.get("retry-after", 5))
     except (TypeError, ValueError):
         return 5.0

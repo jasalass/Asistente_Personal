@@ -13,6 +13,10 @@ from asistente.db.repos.sistema import EstadoSistemaRepo
 from asistente.llm.base import LLM, LLMNoDisponible
 
 MSG_PAUSADO = "Estoy en pausa. Usa /reanudar para volver a activarme."
+NOTA_RESPALDO = (
+    "\n\n_(Respondí con el modelo de respaldo porque el principal agotó su cupo; "
+    "revisa que lo que hice sea lo que pediste.)_"
+)
 MSG_LLM_CAIDO = "No puedo pensar en este momento (límite de uso o caída del servicio). Reintenta en unos minutos."
 
 
@@ -54,6 +58,14 @@ def responder(
         duracion_ms=int((time.monotonic() - inicio) * 1000),
         tokens_in=resultado.tokens_in,
         tokens_out=resultado.tokens_out,
-        detalle={"pasos": resultado.pasos, "propuestas": len(resultado.propuestas)},
+        detalle={
+            "pasos": resultado.pasos,
+            "propuestas": len(resultado.propuestas),
+            "modelos": sorted(resultado.modelos),
+            "respaldo": resultado.usa_respaldo,
+        },
     )
+    if resultado.usa_respaldo:
+        # El modelo de respaldo es menos fiable: el usuario debe saberlo para revisar lo hecho.
+        resultado.respuesta += NOTA_RESPALDO
     return resultado

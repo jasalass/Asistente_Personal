@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 from asistente.agent.service import MSG_LLM_CAIDO, MSG_PAUSADO, responder
 from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
-from asistente.llm.base import LLMNoDisponible
+from asistente.llm.base import LLMNoDisponible, LLMRespuesta
 from tests.fakes import FakeLLM, llamada, texto
 
 TZ = ZoneInfo("America/Santiago")
@@ -31,6 +31,23 @@ def test_flujo_completo_crea_proceso_y_registra_auditoria(conn):
     assert acciones == ["tool:crear_proceso"]
     ejec = conn.execute("select tipo, tokens_in, error from ejecuciones order by id desc limit 1").fetchone()
     assert ejec["tipo"] == "mensaje" and ejec["tokens_in"] == 20 and ejec["error"] is None
+
+
+def test_si_respondio_el_modelo_de_respaldo_se_avisa_y_se_registra(conn):
+    llm = FakeLLM(
+        LLMRespuesta(contenido="Listo.", modelo="openai/gpt-oss-20b", respaldo=True, tokens_in=50)
+    )
+    res = responder(conn, "hola", llm=llm, tz=TZ, ahora=AHORA)
+    assert res.respuesta.startswith("Listo.") and "modelo de respaldo" in res.respuesta
+    ejec = conn.execute(
+        "select detalle from ejecuciones where tipo = 'mensaje' order by id desc limit 1"
+    ).fetchone()
+    assert ejec["detalle"]["respaldo"] is True and ejec["detalle"]["modelos"] == ["openai/gpt-oss-20b"]
+
+
+def test_sin_respaldo_no_se_agrega_ninguna_nota(conn):
+    res = responder(conn, "hola", llm=FakeLLM(texto("Hola!")), tz=TZ, ahora=AHORA)
+    assert res.respuesta == "Hola!"
 
 
 def test_el_prompt_incluye_reglas_fecha_y_zona(conn):

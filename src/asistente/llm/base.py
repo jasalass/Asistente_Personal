@@ -23,6 +23,8 @@ class LLMRespuesta:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tokens_in: int = 0
     tokens_out: int = 0
+    modelo: str = ""  # qué modelo respondió
+    respaldo: bool = False  # True si respondió un modelo de respaldo y no el principal
 
 
 class LLM(Protocol):

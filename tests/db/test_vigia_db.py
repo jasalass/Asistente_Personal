@@ -3,6 +3,7 @@ import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, time, timedelta
 from json import dumps
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import psycopg
@@ -103,6 +104,25 @@ def test_tools_de_temas(conn_vigia):
         reg.invoke("actualizar_tema", {"id": "00000000-0000-0000-0000-000000000000", "activo": True})
 
 
+def test_temas_por_nombre_y_sin_duplicados(conn_vigia):
+    reg = construir_registro(conn_vigia, TZ)
+    # Nombre único: los temas reales de la base siguen existiendo (solo se desactivan en el test).
+    marca = uuid4().hex[:8]
+    nombre = f"Tema de prueba {marca}"
+    t = reg.invoke("crear_tema", {"nombre": nombre, "query_busqueda": "inteligencia artificial salud"})
+    with pytest.raises(ToolError, match="Ya existe el tema .* \\(activo"):
+        reg.invoke("crear_tema", {"nombre": nombre.upper(), "query_busqueda": "otra consulta"})
+
+    pausado = reg.invoke("actualizar_tema", {"tema": marca, "activo": False})
+    assert pausado["id"] == t["id"] and pausado["activo"] is False
+    with pytest.raises(ToolError, match="pausado"):  # sugiere actualizar en vez de duplicar
+        reg.invoke("crear_tema", {"nombre": nombre, "query_busqueda": "otra consulta"})
+    with pytest.raises(ToolError, match="No encontré"):
+        reg.invoke("actualizar_tema", {"tema": "no existe zzz", "activo": True})
+    with pytest.raises(ToolArgsInvalid):
+        reg.invoke("actualizar_tema", {"activo": True})
+
+
 def test_las_tools_de_temas_rechazan_argumentos_invalidos(conn_vigia):
     reg = construir_registro(conn_vigia, TZ)
     for args in ({"nombre": "x", "query_busqueda": "ab"},  # consulta muy corta
@@ -136,7 +156,9 @@ class LLMResumidor:
         if self.cae:
             raise LLMNoDisponible("sin cuota")
         # `json` es aquí el parámetro del protocolo (tapa al módulo), por eso se usa `dumps`.
-        return LLMRespuesta(contenido=dumps({"resumen": self.resumen}))
+        return LLMRespuesta(
+            contenido=dumps({"resumen": self.resumen}), tokens_in=100, tokens_out=50
+        )
 
 
 class Publicaciones:
@@ -295,6 +317,17 @@ def test_tope_de_temas_por_ciclo(conn_vigia):
         TemaRepo(conn_vigia).crear(nuevo(nombre=f"Tema {i}"))
     hechos, _ = correr(conn_vigia, buscador=FakeBuscador([]), max_busquedas_dia=1000, max_por_ciclo=3)
     assert len(hechos) == 3
+
+
+def test_la_ejecucion_registra_los_tokens_gastados(conn_vigia):
+    TemaRepo(conn_vigia).crear(nuevo())
+    llm = LLMResumidor()
+    correr(conn_vigia, buscador=FakeBuscador([res(1), res(2), res(3)]), llm=llm)
+    ejec = conn_vigia.execute(
+        "select tokens_in, tokens_out from ejecuciones where tipo = 'vigia' order by id desc limit 1"
+    ).fetchone()
+    assert llm.llamadas == 3
+    assert (ejec["tokens_in"], ejec["tokens_out"]) == (300, 150)
 
 
 def test_el_registro_de_ejecucion_deja_el_resumen(conn_vigia):

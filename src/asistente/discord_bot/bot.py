@@ -73,6 +73,7 @@ class AsistenteBot(discord.Client):
         vigia: Vigia | None = None,
         vigia_ahora: VigiaAhora | None = None,
         canal_vigia_id: int | None = None,
+        uso: Callable[[], Awaitable[str]] | None = None,
     ) -> None:
         super().__init__(intents=crear_intents(), allowed_mentions=SIN_MENCIONES)
         self._despachador = despachador
@@ -82,6 +83,7 @@ class AsistenteBot(discord.Client):
         self._vigia = vigia
         self._vigia_ahora = vigia_ahora
         self._canal_vigia_id = canal_vigia_id
+        self._uso = uso
         self._tareas: list[asyncio.Task[None]] = []
         self.tree = _Arbol(self, allowlist)
         self._registrar_comandos()
@@ -127,6 +129,15 @@ class AsistenteBot(discord.Client):
             await interaction.response.send_message(
                 "En pausa." if pausado else "Activo.", ephemeral=True
             )
+
+        @self.tree.command(
+            name="uso", description="Tokens consumidos hoy por el asistente", guild=self._guild
+        )
+        async def uso(interaction: discord.Interaction) -> None:
+            if self._uso is None:
+                await interaction.response.send_message("No disponible.", ephemeral=True)
+                return
+            await interaction.response.send_message(await self._uso(), ephemeral=True)
 
         @self.tree.command(
             name="vigia",

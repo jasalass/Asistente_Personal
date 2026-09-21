@@ -44,10 +44,17 @@ class Proposal:
     hash: str
 
 
+_OMITIDOS = frozenset(
+    {"title", "default", "$defs", "additionalProperties", "minLength", "maxLength", "exclusiveMinimum"}
+)
+
+
 def compactar_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Reduce el JSON Schema de Pydantic a lo que el LLM necesita, para gastar menos tokens.
 
-    Inlinea $defs, quita `title` y `default`, y colapsa `anyOf [X, null]` a X.
+    Inlinea $defs, quita `title` y `default`, y colapsa `anyOf [X, null]` a X. También omite las
+    restricciones que el sistema ya valida por su cuenta (largos, campos extra): además de gastar
+    tokens, cada una es otra ocasión para que el proveedor rechace la llamada con un 400.
     """
     defs = schema.get("$defs", {})
 
@@ -65,7 +72,7 @@ def compactar_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 return limpiar({**reales[0], **resto})
         salida = {}
         for k, v in nodo.items():
-            if k in ("title", "default", "$defs"):
+            if k in _OMITIDOS:
                 continue
             # Los nombres de propiedades son datos, no metadatos: se conservan tal cual.
             salida[k] = {n: limpiar(s) for n, s in v.items()} if k == "properties" else limpiar(v)

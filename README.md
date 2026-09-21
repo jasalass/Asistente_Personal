@@ -151,7 +151,8 @@ $env:PYTHONPATH = "src"; python scripts/check_discord.py
 python -m asistente
 ```
 
-Escríbele en cualquiera de los canales permitidos. Comandos (solo tú): `/pausa`, `/reanudar`, `/estado`.
+Escríbele en cualquiera de los canales permitidos. Comandos (solo tú): `/pausa`, `/reanudar`,
+`/estado`, `/uso` (tokens de hoy) y `/vigia` (revisa los temas ahora).
 
 - El bot **ignora sin responder** a cualquier otro usuario, servidor, canal o mensaje directo; ni
   siquiera muestra "escribiendo…".
@@ -176,6 +177,22 @@ son consultas SQL y mensajes con plantilla, así que no gasta cuota de Groq ni p
 - Cada aviso se envía **una sola vez**: queda registrado en `auditoria` y esa misma marca evita
   repetirlo. Se registra solo si Discord confirmó el envío; si falla, se reintenta al ciclo siguiente.
 - Con `/pausa` no envía nada. Los procesos completados o cancelados no generan avisos.
+
+### Consumo y límites de Groq
+
+El plan gratuito de Groq limita **cada modelo** a **8.000 tokens por minuto y 200.000 por día** (mira
+los tuyos en `console.groq.com/settings/limits`). Un mensaje de chat gasta unos 6.000 a 9.000 tokens
+(2 o 3 llamadas al modelo, ~2.900 tokens fijos cada una), así que el agente en `gpt-oss-120b` alcanza
+para unas 25 a 35 conversaciones al día.
+
+- `/uso` muestra lo consumido hoy según los registros del asistente (chat y vigía, por separado).
+- **Respaldo entre modelos:** si el principal agota su cupo (`MODELO_AGENTE`), el chat pasa solo al
+  `MODELO_RESPALDO` (por defecto `gpt-oss-20b`, otro cupo de 200K) y avisa en el mensaje que respondió
+  el de respaldo, porque es menos fiable. Cuando Groq pide esperar más de 30 s (cupo diario) no se
+  pierde tiempo reintentando. Solo Groq: no se usan otros proveedores.
+- Menos llamadas por mensaje: los procesos y temas se indican por **nombre** (sin buscar antes), las
+  tools detectan duplicados por su cuenta y `actualizar_proceso` acepta una `nota` en la misma llamada.
+- El vigía usa el modelo chico y deja registrados sus tokens en cada corrida.
 
 ### Vigía de temas
 
@@ -215,7 +232,7 @@ vigía publica en `#vigia-temas` un embed por artículo: **título, resumen y li
 ├── src/asistente/
 │   ├── config.py            # configuración con Pydantic (secretos ocultos)
 │   ├── security/            # allowlist, registro de tools, aprobaciones
-│   ├── llm/                 # interfaz LLM y cliente de Groq (reintentos por límite de uso)
+│   ├── llm/                 # interfaz LLM, cliente de Groq, respaldo entre modelos y contador de tokens
 │   ├── agent/               # tools, bucle de tool calling, prompt y servicio por mensaje
 │   ├── discord_bot/         # bot, despachador con allowlist, historial, comandos de pausa
 │   ├── heartbeat/           # reglas de avisos (SQL + plantillas) y ciclo de envío

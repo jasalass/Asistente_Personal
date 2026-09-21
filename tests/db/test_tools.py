@@ -63,6 +63,79 @@ def test_proceso_inexistente_es_tool_error(reg):
         reg.invoke("agregar_nota_proceso", {"id": "00000000-0000-0000-0000-000000000000", "nota": "x"})
 
 
+# ---------- por nombre, sin búsqueda previa ----------
+
+
+def test_actualizar_por_nombre_sin_conocer_el_id(reg):
+    p = crear(reg, nombre="Renovar pasaporte")
+    q = reg.invoke("actualizar_proceso", {"proceso": "pasaporte", "estado": "en_espera"})
+    assert q["id"] == p["id"] and q["estado"] == "en_espera"
+
+
+def test_actualizar_con_nota_es_una_sola_llamada_y_deja_ambos_cambios(reg):
+    p = crear(reg, nombre="Visa de estudiante", estado="en_espera")
+    q = reg.invoke(
+        "actualizar_proceso",
+        {"proceso": "visa", "estado": "activo", "nota": "Llegó el certificado del banco"},
+    )
+    assert q["estado"] == "activo" and "nota" not in q
+    tipos_y_textos = [(e["tipo"], e["contenido"]) for e in reg.invoke("ver_historial_proceso", {"id": p["id"]})]
+    assert ("nota", "Llegó el certificado del banco") in tipos_y_textos
+    assert ("cambio_estado", "en_espera -> activo") in tipos_y_textos
+
+
+def test_actualizar_sin_nota_no_agrega_eventos_de_nota(reg):
+    p = crear(reg, nombre="Sin nota")
+    reg.invoke("actualizar_proceso", {"id": p["id"], "prioridad": "alta"})
+    assert [e["tipo"] for e in reg.invoke("ver_historial_proceso", {"id": p["id"]})] == ["nota"]  # solo "creado"
+
+
+def test_nota_e_historial_por_nombre(reg):
+    p = crear(reg, nombre="Compra de notebook")
+    reg.invoke("agregar_nota_proceso", {"proceso": "notebook", "nota": "Cotizé tres modelos"})
+    eventos = reg.invoke("ver_historial_proceso", {"proceso": "Compra de notebook"})
+    assert eventos[0]["contenido"] == "Cotizé tres modelos" and eventos[0]["proceso_id"] == p["id"]
+
+
+def test_nombre_ambiguo_lista_las_opciones_y_pide_el_id(reg):
+    a = crear(reg, nombre="Pasaporte de Ana")
+    b = crear(reg, nombre="Pasaporte de Luis")
+    with pytest.raises(ToolError) as e:
+        reg.invoke("actualizar_proceso", {"proceso": "pasaporte", "prioridad": "alta"})
+    msg = str(e.value)
+    assert a["id"] in msg and b["id"] in msg and "id" in msg
+    # con el nombre exacto sí se resuelve
+    q = reg.invoke("actualizar_proceso", {"proceso": "pasaporte de ana", "prioridad": "alta"})
+    assert q["id"] == a["id"] and q["prioridad"] == "alta"
+
+
+def test_nombre_sin_coincidencias(reg):
+    with pytest.raises(ToolError, match="No encontré"):
+        reg.invoke("actualizar_proceso", {"proceso": "no existe zzz", "estado": "activo"})
+
+
+def test_entre_uno_abierto_y_uno_cerrado_se_prefiere_el_abierto(reg):
+    crear(reg, nombre="Trámite viejo", estado="completado")
+    abierto = crear(reg, nombre="Trámite nuevo")
+    q = reg.invoke("actualizar_proceso", {"proceso": "trámite", "proxima_accion": "llamar"})
+    assert q["id"] == abierto["id"]
+
+
+def test_hay_que_indicar_el_proceso_de_una_sola_forma(reg):
+    p = crear(reg)
+    for args in ({"estado": "activo"}, {"id": p["id"], "proceso": "x", "estado": "activo"}):
+        with pytest.raises(ToolArgsInvalid):
+            reg.invoke("actualizar_proceso", args)
+
+
+def test_crear_un_proceso_abierto_duplicado_falla_pero_uno_cerrado_no_estorba(reg):
+    crear(reg, nombre="Declaración de renta")
+    with pytest.raises(ToolError, match="Ya existe"):
+        crear(reg, nombre="declaración DE RENTA")
+    hecho = crear(reg, nombre="Otra cosa", estado="completado")
+    assert crear(reg, nombre=hecho["nombre"])["id"] != hecho["id"]
+
+
 def test_buscar_y_listar(reg):
     p = crear(reg, nombre="Compra de notebook")
     assert p["id"] in [x["id"] for x in reg.invoke("buscar_procesos", {"texto": "notebook"})]

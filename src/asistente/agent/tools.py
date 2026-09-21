@@ -27,6 +27,8 @@ from asistente.db.repos.recordatorios import RecordatorioRepo
 from asistente.db.repos.temas import TemaRepo
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
 
+_CERRADOS = (ProcesoEstado.COMPLETADO, ProcesoEstado.CANCELADO)
+
 # Campos de texto que el LLM puede vaciar enviando "" (un null suele significar "no lo mencioné").
 _TEXTO_BORRABLE = ("descripcion", "proxima_accion", "esperando_a", "bloqueo_detalle")
 
@@ -67,19 +69,45 @@ class CrearProcesoArgs(_SinNulos, ProcesoNuevo):
     proxima_accion_fecha: FechaHoraLocal | None = None  # type: ignore[assignment]
 
 
-class ActualizarProcesoArgs(_SinNulos):
-    id: UUID
+class _RefProceso(_SinNulos):
+    """Un proceso se puede indicar por id o por nombre: así no hace falta una búsqueda previa."""
+
+    id: UUID | None = Field(default=None, description="Id del proceso, si ya lo conoces")
+    proceso: str | None = Field(default=None, min_length=1, description="Nombre (o parte) del proceso")
+
+    @model_validator(mode="after")
+    def _uno_solo(self) -> "_RefProceso":
+        if (self.id is None) == (self.proceso is None):
+            raise ValueError("indica el proceso con 'id' o con 'proceso' (solo uno)")
+        return self
+
+
+class _RefTema(_SinNulos):
+    id: UUID | None = Field(default=None, description="Id del tema, si ya lo conoces")
+    tema: str | None = Field(default=None, min_length=1, description="Nombre (o parte) del tema")
+
+    @model_validator(mode="after")
+    def _uno_solo(self) -> "_RefTema":
+        if (self.id is None) == (self.tema is None):
+            raise ValueError("indica el tema con 'id' o con 'tema' (solo uno)")
+        return self
+
+
+class ActualizarProcesoArgs(_RefProceso):
     nombre: str | None = Field(default=None, min_length=1, max_length=200)
-    descripcion: str | None = Field(default=None, description="Envía '' para borrarlo")
+    descripcion: str | None = None
     estado: ProcesoEstado | None = None
     prioridad: Prioridad | None = None
-    proxima_accion: str | None = Field(default=None, description="Envía '' para borrarla")
+    proxima_accion: str | None = None
     proxima_accion_fecha: FechaHoraLocal | None = None
-    esperando_a: str | None = Field(default=None, description="Envía '' para borrarlo")
-    bloqueo_detalle: str | None = Field(default=None, description="Envía '' para borrarlo")
+    esperando_a: str | None = None
+    bloqueo_detalle: str | None = None
     fecha_limite: date | None = None
     etiquetas: list[str] | None = None
     frecuencia_chequeo_dias: int | None = Field(default=None, gt=0)
+    nota: str | None = Field(
+        default=None, description="Lo que pasó; se agrega al historial en la misma llamada"
+    )
 
 
 class ListarProcesosArgs(_SinNulos):
@@ -93,16 +121,14 @@ class BuscarProcesosArgs(_SinNulos):
     texto: str = Field(min_length=1, description="Parte del nombre del proceso")
 
 
-class AgregarNotaArgs(_SinNulos):
-    id: UUID
+class AgregarNotaArgs(_RefProceso):
     nota: str = Field(min_length=1)
     tipo: EventoTipo = Field(
         default=EventoTipo.NOTA, description="'nota' o 'accion_hecha' (algo que ya se hizo)"
     )
 
 
-class HistorialArgs(_SinNulos):
-    id: UUID
+class HistorialArgs(_RefProceso):
     limite: int = Field(default=10, ge=1, le=30)
 
 
@@ -128,8 +154,7 @@ class ListarTemasArgs(_SinNulos):
     solo_activos: bool = False
 
 
-class ActualizarTemaArgs(_SinNulos, TemaActualizacion):
-    id: UUID
+class ActualizarTemaArgs(_RefTema, TemaActualizacion):
     hora_preferida: HoraLocal | None = None  # type: ignore[assignment]
 
 
@@ -154,11 +179,38 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
     def fecha_hora(valor: str | None) -> datetime | None:
         return con_zona(datetime.fromisoformat(valor)) if valor is not None else None
 
-    def proceso_o_error(pid: UUID):
-        p = procesos.obtener(pid)
-        if p is None:
-            raise ToolError("No existe un proceso con ese id. Usa buscar_procesos primero.")
-        return p
+    def elegir(candidatos: list, texto: str, cerrado, que: str, herramienta: str):
+        """Resuelve un nombre a un único elemento, o explica qué falta. Prefiere los abiertos."""
+        exactos = [c for c in candidatos if c.nombre.casefold() == texto.casefold()]
+        candidatos = exactos or candidatos
+        candidatos = [c for c in candidatos if not cerrado(c)] or candidatos
+        if not candidatos:
+            raise ToolError(f"No encontré ningún {que} que coincida con '{texto}'. Usa {herramienta}.")
+        if len(candidatos) > 1:
+            opciones = "; ".join(f"{c.nombre} (id {c.id})" for c in candidatos)
+            raise ToolError(f"Varios {que}s coinciden con '{texto}': {opciones}. Repite con el id.")
+        return candidatos[0]
+
+    def resolver_proceso(id=None, proceso=None):
+        if id is not None:
+            p = procesos.obtener(id)
+            if p is None:
+                raise ToolError("No existe un proceso con ese id. Usa listar_procesos.")
+            return p
+        return elegir(
+            procesos.buscar_por_nombre(proceso, limite=8), proceso,
+            lambda p: p.estado in _CERRADOS, "proceso", "listar_procesos",
+        )
+
+    def resolver_tema(id=None, tema=None):
+        if id is not None:
+            t = temas.obtener(id)
+            if t is None:
+                raise ToolError("No existe un tema con ese id. Usa listar_temas.")
+            return t
+        return elegir(
+            temas.buscar_por_nombre(tema, limite=8), tema, lambda t: not t.activo, "tema", "listar_temas"
+        )
 
     def listar_procesos(estados=None, limite=20):
         return [p.model_dump(mode="json") for p in procesos.listar(estados, limite)]
@@ -167,26 +219,36 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
         return [p.model_dump(mode="json") for p in procesos.buscar_por_nombre(texto)]
 
     def crear_proceso(**campos):
+        nombre = campos["nombre"]
+        for p in procesos.buscar_por_nombre(nombre, limite=8):
+            if p.nombre.casefold() == nombre.casefold() and p.estado not in _CERRADOS:
+                raise ToolError(
+                    f"Ya existe el proceso abierto '{p.nombre}' (id {p.id}). "
+                    "Actualízalo en lugar de crear otro."
+                )
         campos["proxima_accion_fecha"] = fecha_hora(campos.get("proxima_accion_fecha"))
         return procesos.crear(ProcesoNuevo(**campos)).model_dump(mode="json")
 
-    def actualizar_proceso(id, **campos):
-        proceso_o_error(id)
+    def actualizar_proceso(id=None, proceso=None, **campos):
+        pid = resolver_proceso(id, proceso).id
+        nota = campos.pop("nota", None)
         for k in _TEXTO_BORRABLE:
             if campos.get(k) == "":
                 campos[k] = None
         if "proxima_accion_fecha" in campos:
             campos["proxima_accion_fecha"] = fecha_hora(campos["proxima_accion_fecha"])
-        actualizado = procesos.actualizar(id, ProcesoActualizacion(**campos))
+        actualizado = procesos.actualizar(pid, ProcesoActualizacion(**campos))
+        if nota:
+            procesos.agregar_evento(pid, EventoTipo.NOTA, nota)
         return actualizado.model_dump(mode="json")
 
-    def agregar_nota_proceso(id, nota, tipo=EventoTipo.NOTA):
-        proceso_o_error(id)
-        return procesos.agregar_evento(id, tipo, nota).model_dump(mode="json")
+    def agregar_nota_proceso(nota, id=None, proceso=None, tipo=EventoTipo.NOTA):
+        pid = resolver_proceso(id, proceso).id
+        return procesos.agregar_evento(pid, tipo, nota).model_dump(mode="json")
 
-    def ver_historial_proceso(id, limite=10):
-        proceso_o_error(id)
-        return [e.model_dump(mode="json") for e in procesos.eventos(id, limite)]
+    def ver_historial_proceso(id=None, proceso=None, limite=10):
+        pid = resolver_proceso(id, proceso).id
+        return [e.model_dump(mode="json") for e in procesos.eventos(pid, limite)]
 
     def guardar_memoria(contenido, etiquetas=()):
         m = memorias.guardar(contenido, MemoriaOrigen.USUARIO, etiquetas)
@@ -199,6 +261,12 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
         return recordatorios.crear(texto, fecha_hora(fecha)).model_dump(mode="json")
 
     def crear_tema(**campos):
+        for t in temas.buscar_por_nombre(campos["nombre"], limite=8):
+            if t.nombre.casefold() == campos["nombre"].casefold():
+                estado = "activo" if t.activo else "pausado"
+                raise ToolError(
+                    f"Ya existe el tema '{t.nombre}' ({estado}, id {t.id}). Usa actualizar_tema."
+                )
         if "hora_preferida" in campos:
             campos["hora_preferida"] = time.fromisoformat(campos["hora_preferida"])
         return temas.crear(TemaNuevo(**campos)).model_dump(mode="json")
@@ -206,13 +274,12 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
     def listar_temas(solo_activos=False):
         return [t.model_dump(mode="json") for t in temas.listar(solo_activos=solo_activos)]
 
-    def actualizar_tema(id, **campos):
-        if temas.obtener(id) is None:
-            raise ToolError("No existe un tema con ese id. Usa listar_temas primero.")
+    def actualizar_tema(id=None, tema=None, **campos):
+        tid = resolver_tema(id, tema).id
         if "hora_preferida" in campos:
             campos["hora_preferida"] = time.fromisoformat(campos["hora_preferida"])
         try:
-            return temas.actualizar(id, TemaActualizacion(**campos)).model_dump(mode="json")
+            return temas.actualizar(tid, TemaActualizacion(**campos)).model_dump(mode="json")
         except ValidationError as e:
             # Solo el motivo: p. ej. "cada_x_dias requiere intervalo_dias".
             raise ToolError("; ".join(err["msg"] for err in e.errors())) from None
@@ -221,79 +288,73 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
     for nombre, descripcion, handler, params in [
         (
             "listar_procesos",
-            "Lista los procesos del usuario, ordenados por prioridad. Úsala para 'qué tengo pendiente'.",
+            "Lista los procesos por prioridad ('qué tengo pendiente').",
             listar_procesos,
             ListarProcesosArgs,
         ),
         (
             "buscar_procesos",
-            "Busca procesos por parte del nombre. Úsala SIEMPRE antes de actualizar para obtener el id.",
+            "Busca procesos por parte del nombre.",
             buscar_procesos,
             BuscarProcesosArgs,
         ),
         (
             "crear_proceso",
-            "Registra un proceso, trámite o proyecto nuevo que el usuario está llevando.",
+            "Registra un proceso o trámite nuevo. Falla si ya hay uno abierto con ese nombre.",
             crear_proceso,
             CrearProcesoArgs,
         ),
         (
             "actualizar_proceso",
-            "Modifica campos de un proceso existente (estado, próxima acción, a quién se espera...).",
+            "Modifica un proceso (estado, próxima acción, espera...) por 'id' o 'proceso'. '' borra un campo de texto.",
             actualizar_proceso,
             ActualizarProcesoArgs,
         ),
         (
             "agregar_nota_proceso",
-            "Agrega una nota o una acción realizada al historial de un proceso.",
+            "Agrega una nota o acción hecha al historial de un proceso ('id' o 'proceso').",
             agregar_nota_proceso,
             AgregarNotaArgs,
         ),
         (
             "ver_historial_proceso",
-            "Muestra los últimos eventos de un proceso.",
+            "Últimos eventos de un proceso ('id' o 'proceso').",
             ver_historial_proceso,
             HistorialArgs,
         ),
         (
             "guardar_memoria",
-            "Guarda un dato o preferencia del usuario que no encaja en un proceso.",
+            "Guarda un dato o preferencia que no encaja en un proceso.",
             guardar_memoria,
             GuardarMemoriaArgs,
         ),
         (
             "buscar_memorias",
-            "Busca en las memorias guardadas por texto.",
+            "Busca en las memorias por texto.",
             buscar_memorias,
             BuscarMemoriasArgs,
         ),
         (
             "crear_recordatorio",
-            "Crea un recordatorio para una fecha y hora concretas.",
+            "Crea un recordatorio para una fecha y hora.",
             crear_recordatorio,
             CrearRecordatorioArgs,
         ),
         (
             "listar_temas",
-            "Lista los temas que el vigía sigue (búsqueda periódica de novedades en la web).",
+            "Lista los temas que sigue el vigía.",
             listar_temas,
             ListarTemasArgs,
         ),
         (
             "crear_tema",
-            (
-                "Crea un tema para que el vigía busque novedades periódicamente y las publique "
-                "en #vigia-temas. No lee ni devuelve los artículos."
-            ),
+            "Crea un tema que el vigía busca y publica en #vigia-temas. Falla si el nombre ya existe.",
             crear_tema,
             CrearTemaArgs,
         ),
         (
             "actualizar_tema",
-            (
-                "Modifica un tema del vigía (frecuencia, búsqueda, cantidad...) o lo pausa con "
-                "activo=false. Los temas no se borran."
-            ),
+            "Modifica o pausa (activo=false) un tema ('id' o 'tema'). Los temas no se borran.",
             actualizar_tema,
             ActualizarTemaArgs,
         ),

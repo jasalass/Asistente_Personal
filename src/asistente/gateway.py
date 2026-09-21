@@ -16,8 +16,10 @@ from asistente.db.connection import transaccion
 from asistente.discord_bot.bot import AsistenteBot, ejecutar
 from asistente.discord_bot.despachador import Despachador
 from asistente.heartbeat.runner import latido
+from asistente.llm.combinadores import LLMConRespaldo
 from asistente.llm.groq import GroqLLM
 from asistente.security.allowlist import Allowlist
+from asistente.uso import texto_uso
 from asistente.vigia import runner as vigia_runner
 from asistente.vigia.tavily import TavilyBuscador
 
@@ -26,7 +28,17 @@ log = logging.getLogger(__name__)
 
 def construir_bot(cfg: Settings) -> AsistenteBot:
     tz = ZoneInfo(cfg.timezone)
-    llm = GroqLLM(cfg.groq_api_key.get_secret_value(), cfg.modelo_agente, reasoning_effort="low")
+    clave_groq = cfg.groq_api_key.get_secret_value()
+    # Cada modelo tiene su propio cupo diario (200K tokens): si el principal se agota, el chat pasa
+    # al de respaldo en vez de quedarse sin responder.
+    llm = LLMConRespaldo(
+        GroqLLM(clave_groq, cfg.modelo_agente, reasoning_effort="low"),
+        *(
+            GroqLLM(clave_groq, modelo, reasoning_effort="low")
+            for modelo in (cfg.modelo_respaldo,)
+            if modelo and modelo != cfg.modelo_agente
+        ),
+    )
 
     async def responder_async(texto: str, historial: Sequence[dict[str, Any]]) -> ResultadoAgente:
         def trabajo() -> ResultadoAgente:
@@ -95,6 +107,13 @@ def construir_bot(cfg: Settings) -> AsistenteBot:
             )
             return resumen_manual(hechos)
 
+    async def uso_async() -> str:
+        def leer() -> str:
+            with transaccion() as conn:
+                return texto_uso(conn, datetime.now(tz), tz, cfg.groq_limite_diario_tokens)
+
+        return await asyncio.to_thread(leer)
+
     return AsistenteBot(
         allowlist,
         Despachador(allowlist, responder_async),
@@ -103,6 +122,7 @@ def construir_bot(cfg: Settings) -> AsistenteBot:
         vigia=vigia_fn,
         vigia_ahora=vigia_ahora_fn,
         canal_vigia_id=cfg.discord_canal_vigia_id,
+        uso=uso_async,
     )
 
 
