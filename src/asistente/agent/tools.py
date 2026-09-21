@@ -19,6 +19,7 @@ from asistente.agenda.ocurrencias import (
     advertencia_de_vigencia,
     describir,
     nombre_dia,
+    ocurrencia,
     proximas,
 )
 from asistente.agent.prompt import WORKSPACE
@@ -202,9 +203,19 @@ class CrearEventoArgs(_SinNulos):
         max_length=120,
         description="Nombre corto (máx. 60), ej. 'DSY1104 Desarrollo Fullstack II'. Profesor y sala van en descripcion",
     )
-    dias: list[str] = Field(min_length=1, description="lunes, martes, miércoles... (uno o varios)")
+    dias: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="SOLO si se repite cada semana ('todos los martes'): lunes, martes... (uno o varios)",
+    )
+    fecha: date | None = Field(
+        default=None,
+        description="SOLO si ocurre UNA vez ('el martes', 'el 25'): esa fecha, YYYY-MM-DD. Sin 'dias'",
+    )
     hora: HoraLocal
-    duracion_min: int | None = Field(default=None, ge=1, le=1440)
+    duracion_min: int | None = Field(
+        default=None, ge=1, le=1440, description="SOLO si el usuario la dijo; nunca la inventes"
+    )
     aviso_min_antes: int | None = Field(
         default=None, ge=0, le=1440, description="Minutos antes para avisar; 60 si no se indica, 0 = sin aviso"
     )
@@ -219,6 +230,14 @@ class CrearEventoArgs(_SinNulos):
         default=None, description="SOLO si el usuario dio una fecha de término; si no, omitir. YYYY-MM-DD"
     )
     descripcion: str | None = Field(default=None, max_length=500, description="Lugar, sala, enlace...")
+
+    @model_validator(mode="after")
+    def _semanal_o_unica(self) -> "CrearEventoArgs":
+        if (self.dias is None) == (self.fecha is None):
+            raise ValueError("indica 'dias' (se repite cada semana) o 'fecha' (una sola vez), no ambos ni ninguno")
+        if self.fecha and (self.desde or self.hasta):
+            raise ValueError("un evento de una sola vez no lleva 'desde' ni 'hasta'")
+        return self
 
 
 class _RefEvento(_SinNulos):
@@ -377,7 +396,14 @@ def construir_registro(
         return [m.model_dump(mode="json") for m in memorias.buscar(consulta, limite)]
 
     def crear_recordatorio(texto, fecha):
-        return recordatorios.crear(texto, fecha_hora(fecha)).model_dump(mode="json")
+        cuando = fecha_hora(fecha)
+        coinciden = choques(cuando.astimezone(tz))  # antes de crearlo, para no chocar consigo mismo
+        resultado = recordatorios.crear(texto, cuando).model_dump(mode="json")
+        if coinciden:
+            resultado["advertencia"] = (
+                "Coincide con: " + "; ".join(coinciden) + ". Avísale al usuario del choque de horario."
+            )
+        return resultado
 
     def crear_tema(**campos):
         for t in temas.buscar_por_nombre(campos["nombre"], limite=8):
@@ -436,6 +462,29 @@ def construir_registro(
         ]
         return resultado
 
+    def choques(inicio: datetime, fin: datetime | None = None, excluir_evento: int | None = None) -> list[str]:
+        """Eventos (no suspendidos) y recordatorios pendientes que coinciden con [inicio, fin]."""
+        fin = fin or inicio
+        dia = inicio.astimezone(tz).date()
+        encontrados: list[str] = []
+        if eventos.disponible():
+            excepciones = eventos.excepciones(dia, dia)
+            for e in eventos.listar(solo_activos=True):
+                if e.id == excluir_evento:
+                    continue
+                o = ocurrencia(e, dia, excepciones, feriados)
+                if o is None or o.suspendida:
+                    continue
+                e_ini = datetime.combine(dia, e.hora, tzinfo=tz)
+                e_fin = e_ini + timedelta(minutes=e.duracion_min or 0)
+                if e_ini <= fin and inicio <= e_fin:
+                    hasta = f" a {e_fin:%H:%M}" if e.duracion_min else ""
+                    encontrados.append(f"{e.nombre} ({e_ini:%H:%M}{hasta})")
+        for r in recordatorios.entre(inicio, fin + timedelta(microseconds=1)):
+            if not r.enviado:
+                encontrados.append(f"recordatorio «{r.texto}» ({r.fecha.astimezone(tz):%H:%M})")
+        return encontrados
+
     def cancelar_recordatorio(id=None, recordatorio=None):
         if id is not None:
             r = recordatorios.obtener(id)
@@ -484,18 +533,35 @@ def construir_registro(
         datos = {
             "nombre": nombre,
             "descripcion": campos.get("descripcion"),
-            "dias_semana": dias_a_numeros(campos["dias"]),
+            "dias_semana": (
+                [campos["fecha"].isoweekday()] if "fecha" in campos else dias_a_numeros(campos["dias"])
+            ),
             "hora": time.fromisoformat(campos["hora"]),
             "duracion_min": campos.get("duracion_min"),
             "aviso_min_antes": campos.get("aviso_min_antes", 60),
             "suspender_feriados": campos.get("suspender_feriados", True),
-            "vigente_desde": campos.get("desde"),
-            "vigente_hasta": campos.get("hasta"),
+            # Una sola vez = vigente ese único día.
+            "vigente_desde": campos.get("fecha", campos.get("desde")),
+            "vigente_hasta": campos.get("fecha", campos.get("hasta")),
         }
         try:
-            return con_proximas(eventos.crear(EventoNuevo(**datos)))
+            nuevo = eventos.crear(EventoNuevo(**datos))
         except ValidationError as e:
             raise ToolError("; ".join(err["msg"] for err in e.errors())) from None
+        resultado = con_proximas(nuevo)
+        # Se revisa la próxima vez que ocurre (semanal: el resto se comporta igual).
+        primera = next(
+            iter(proximas(nuevo, hoy(), {}, feriados, cuantas=1)), None
+        )
+        if primera and not primera.suspendida:
+            ini = datetime.combine(primera.fecha, nuevo.hora, tzinfo=tz)
+            fin = ini + timedelta(minutes=nuevo.duracion_min or 0)
+            if coinciden := choques(ini, fin, excluir_evento=nuevo.id):
+                resultado["advertencia_choque"] = (
+                    f"Se cruza con: {'; '.join(coinciden)} ({nombre_dia(primera.fecha)} {primera.fecha:%d/%m}). "
+                    "Avísale al usuario del choque de horario."
+                )
+        return resultado
 
     def actualizar_evento(id=None, evento=None, **campos):
         exigir_agenda()

@@ -421,3 +421,48 @@ def test_otro_dia_de_la_semana_no_avisa(conn_agenda):
     EventoRepo(conn_agenda).crear(nuevo())
     martes = LUNES + timedelta(days=1)
     assert recolectar(conn_agenda, en(19, 45, martes), TZ, feriados=FeriadosFalsos()) == []
+
+
+# ---------- choques de horario ----------
+
+
+def test_un_recordatorio_dentro_de_una_clase_avisa_del_choque(reg):
+    # Caso real: "sácame la basura mañana a las 9" cayó en medio de la clase de 08:01 a 09:20.
+    reg.invoke("crear_evento", {"nombre": "TST1104 Fullstack", "dias": ["martes"], "hora": "08:01",
+                                "duracion_min": 79})
+    r = reg.invoke("crear_recordatorio", {"texto": "sacar la basura", "fecha": "2026-09-22T09:00:00"})
+    assert "TST1104 Fullstack (08:01 a 09:20)" in r["advertencia"]
+
+
+def test_un_recordatorio_fuera_de_las_clases_no_avisa(reg):
+    reg.invoke("crear_evento", {"nombre": "TST1104 Fullstack", "dias": ["martes"], "hora": "08:01",
+                                "duracion_min": 79})
+    r = reg.invoke("crear_recordatorio", {"texto": "sacar la basura", "fecha": "2026-09-22T10:00:00"})
+    assert "advertencia" not in r
+
+
+def test_un_evento_nuevo_que_se_cruza_con_otro_o_un_recordatorio_avisa(reg):
+    reg.invoke("crear_recordatorio", {"texto": "llamar al banco", "fecha": "2026-09-22T15:45:00"})
+    reg.invoke("crear_evento", {"nombre": "TST1107 Cloud", "dias": ["martes"], "hora": "15:31",
+                                "duracion_min": 79})
+    e = reg.invoke("crear_evento", {"nombre": "TST9999 Otro", "dias": ["martes"], "hora": "16:00",
+                                    "duracion_min": 30})
+    assert "TST1107 Cloud" in e["advertencia_choque"]
+    sin_choque = reg.invoke("crear_evento", {"nombre": "TST8888 Libre", "dias": ["jueves"], "hora": "10:00"})
+    assert "advertencia_choque" not in sin_choque
+
+
+# ---------- eventos de una sola vez ----------
+
+
+def test_un_evento_de_una_sola_vez_no_se_repite(reg):
+    # Caso real: "el martes a las 8:40 debo ir a la municipalidad" quedó como evento de todos los martes.
+    e = reg.invoke("crear_evento", {"nombre": "TST Trámite municipal", "fecha": "2026-09-22", "hora": "08:40"})
+    assert e["dias_semana"] == [2] and e["vigente_desde"] == "2026-09-22" == e["vigente_hasta"]
+    assert e["proximas"] == ["martes 22/09 08:40"] and "duracion_min" not in e
+
+
+def test_hay_que_elegir_entre_semanal_y_una_vez(reg):
+    for campos in ({"hora": "08:40"}, {"dias": ["martes"], "fecha": "2026-09-22", "hora": "08:40"}):
+        with pytest.raises(ToolArgsInvalid):
+            reg.invoke("crear_evento", {"nombre": "X", **campos})
