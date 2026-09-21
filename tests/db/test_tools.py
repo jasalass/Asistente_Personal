@@ -110,5 +110,5 @@ def test_el_esquema_para_el_llm_incluye_todas_las_tools(reg):
     assert nombres == {
         "listar_procesos", "buscar_procesos", "crear_proceso", "actualizar_proceso",
         "agregar_nota_proceso", "ver_historial_proceso", "guardar_memoria",
-        "buscar_memorias", "crear_recordatorio",
+        "buscar_memorias", "crear_recordatorio", "listar_temas", "crear_tema", "actualizar_tema",
     }

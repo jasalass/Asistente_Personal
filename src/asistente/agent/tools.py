@@ -3,12 +3,12 @@
 Nada acá contacta a terceros ni gasta dinero; eso, cuando exista, se registra como PROPONE.
 """
 
-from datetime import date, datetime
-from typing import Any
+from datetime import date, datetime, time
+from typing import Annotated, Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from asistente.db.connection import Conn
 from asistente.db.models import (
@@ -18,14 +18,33 @@ from asistente.db.models import (
     ProcesoActualizacion,
     ProcesoEstado,
     ProcesoNuevo,
+    TemaActualizacion,
+    TemaNuevo,
 )
 from asistente.db.repos.memorias import MemoriaRepo
 from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.recordatorios import RecordatorioRepo
+from asistente.db.repos.temas import TemaRepo
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
 
 # Campos de texto que el LLM puede vaciar enviando "" (un null suele significar "no lo mencioné").
 _TEXTO_BORRABLE = ("descripcion", "proxima_accion", "esperando_a", "bloqueo_detalle")
+
+# Groq valida los argumentos contra el esquema en su servidor, y los formatos `date-time` y `time`
+# de JSON Schema exigen desfase horario o segundos ("08:00" se rechazaba con un 400). Por eso el
+# modelo ve strings con un patrón, y el sistema los interpreta y les aplica la zona del usuario.
+# El desfase se acepta pero se descarta: el que agrega el modelo no es confiable (ver `con_zona`).
+FechaHoraLocal = Annotated[
+    str,
+    Field(
+        pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?$",
+        description="Fecha y hora local ISO 8601, ej. 2026-10-15T13:00:00",
+    ),
+]
+HoraLocal = Annotated[
+    str,
+    Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$", description="Hora local HH:MM, ej. 08:00"),
+]
 
 
 class _SinNulos(BaseModel):
@@ -45,7 +64,7 @@ class _SinNulos(BaseModel):
 
 
 class CrearProcesoArgs(_SinNulos, ProcesoNuevo):
-    pass
+    proxima_accion_fecha: FechaHoraLocal | None = None  # type: ignore[assignment]
 
 
 class ActualizarProcesoArgs(_SinNulos):
@@ -55,7 +74,7 @@ class ActualizarProcesoArgs(_SinNulos):
     estado: ProcesoEstado | None = None
     prioridad: Prioridad | None = None
     proxima_accion: str | None = Field(default=None, description="Envía '' para borrarla")
-    proxima_accion_fecha: datetime | None = None
+    proxima_accion_fecha: FechaHoraLocal | None = None
     esperando_a: str | None = Field(default=None, description="Envía '' para borrarlo")
     bloqueo_detalle: str | None = Field(default=None, description="Envía '' para borrarlo")
     fecha_limite: date | None = None
@@ -97,14 +116,32 @@ class BuscarMemoriasArgs(_SinNulos):
     limite: int = Field(default=5, ge=1, le=15)
 
 
+class CrearTemaArgs(_SinNulos, TemaNuevo):
+    hora_preferida: HoraLocal | None = None  # type: ignore[assignment]
+    avisar_sin_novedades: bool | None = Field(  # type: ignore[assignment]
+        default=None,
+        description="Solo true si el usuario pidió expresamente que le avisen cuando no hay novedades",
+    )
+
+
+class ListarTemasArgs(_SinNulos):
+    solo_activos: bool = False
+
+
+class ActualizarTemaArgs(_SinNulos, TemaActualizacion):
+    id: UUID
+    hora_preferida: HoraLocal | None = None  # type: ignore[assignment]
+
+
 class CrearRecordatorioArgs(_SinNulos):
     texto: str = Field(min_length=1, max_length=500)
-    fecha: datetime = Field(description="Fecha y hora ISO 8601, en hora local del usuario")
+    fecha: FechaHoraLocal
 
 
 def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
     """Registro con todas las tools atadas a una conexión (una unidad de trabajo)."""
     procesos, memorias, recordatorios = ProcesoRepo(conn), MemoriaRepo(conn), RecordatorioRepo(conn)
+    temas = TemaRepo(conn)
 
     def con_zona(dt: datetime | None) -> datetime | None:
         """Toma la hora tal como se dijo, en la zona del usuario, y descarta cualquier desfase.
@@ -113,6 +150,9 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
         -03:00, lo que corría todas las fechas una hora. El desfase que traiga no es confiable.
         """
         return dt.replace(tzinfo=tz) if dt is not None else None
+
+    def fecha_hora(valor: str | None) -> datetime | None:
+        return con_zona(datetime.fromisoformat(valor)) if valor is not None else None
 
     def proceso_o_error(pid: UUID):
         p = procesos.obtener(pid)
@@ -127,7 +167,7 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
         return [p.model_dump(mode="json") for p in procesos.buscar_por_nombre(texto)]
 
     def crear_proceso(**campos):
-        campos["proxima_accion_fecha"] = con_zona(campos.get("proxima_accion_fecha"))
+        campos["proxima_accion_fecha"] = fecha_hora(campos.get("proxima_accion_fecha"))
         return procesos.crear(ProcesoNuevo(**campos)).model_dump(mode="json")
 
     def actualizar_proceso(id, **campos):
@@ -136,7 +176,7 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
             if campos.get(k) == "":
                 campos[k] = None
         if "proxima_accion_fecha" in campos:
-            campos["proxima_accion_fecha"] = con_zona(campos["proxima_accion_fecha"])
+            campos["proxima_accion_fecha"] = fecha_hora(campos["proxima_accion_fecha"])
         actualizado = procesos.actualizar(id, ProcesoActualizacion(**campos))
         return actualizado.model_dump(mode="json")
 
@@ -156,7 +196,26 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
         return [m.model_dump(mode="json") for m in memorias.buscar(consulta, limite)]
 
     def crear_recordatorio(texto, fecha):
-        return recordatorios.crear(texto, con_zona(fecha)).model_dump(mode="json")
+        return recordatorios.crear(texto, fecha_hora(fecha)).model_dump(mode="json")
+
+    def crear_tema(**campos):
+        if "hora_preferida" in campos:
+            campos["hora_preferida"] = time.fromisoformat(campos["hora_preferida"])
+        return temas.crear(TemaNuevo(**campos)).model_dump(mode="json")
+
+    def listar_temas(solo_activos=False):
+        return [t.model_dump(mode="json") for t in temas.listar(solo_activos=solo_activos)]
+
+    def actualizar_tema(id, **campos):
+        if temas.obtener(id) is None:
+            raise ToolError("No existe un tema con ese id. Usa listar_temas primero.")
+        if "hora_preferida" in campos:
+            campos["hora_preferida"] = time.fromisoformat(campos["hora_preferida"])
+        try:
+            return temas.actualizar(id, TemaActualizacion(**campos)).model_dump(mode="json")
+        except ValidationError as e:
+            # Solo el motivo: p. ej. "cada_x_dias requiere intervalo_dias".
+            raise ToolError("; ".join(err["msg"] for err in e.errors())) from None
 
     registro = ToolRegistry()
     for nombre, descripcion, handler, params in [
@@ -213,6 +272,30 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
             "Crea un recordatorio para una fecha y hora concretas.",
             crear_recordatorio,
             CrearRecordatorioArgs,
+        ),
+        (
+            "listar_temas",
+            "Lista los temas que el vigía sigue (búsqueda periódica de novedades en la web).",
+            listar_temas,
+            ListarTemasArgs,
+        ),
+        (
+            "crear_tema",
+            (
+                "Crea un tema para que el vigía busque novedades periódicamente y las publique "
+                "en #vigia-temas. No lee ni devuelve los artículos."
+            ),
+            crear_tema,
+            CrearTemaArgs,
+        ),
+        (
+            "actualizar_tema",
+            (
+                "Modifica un tema del vigía (frecuencia, búsqueda, cantidad...) o lo pausa con "
+                "activo=false. Los temas no se borran."
+            ),
+            actualizar_tema,
+            ActualizarTemaArgs,
         ),
     ]:
         registro.register(ToolSpec(nombre, Level.AUTO, descripcion, handler, params))

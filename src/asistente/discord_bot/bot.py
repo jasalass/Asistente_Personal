@@ -11,6 +11,7 @@ from asistente.db.repos.sistema import EstadoSistemaRepo
 from asistente.discord_bot.despachador import Despachador
 from asistente.discord_bot.util import dividir_mensaje
 from asistente.security.allowlist import Allowlist
+from asistente.vigia.runner import Publicacion, Publicar
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,16 @@ def crear_intents() -> discord.Intents:
 
 Enviar = Callable[[str], Awaitable[None]]
 Latido = Callable[[Enviar], Awaitable[None]]
+Vigia = Callable[[Publicar], Awaitable[None]]
+VigiaAhora = Callable[[Publicar], Awaitable[str]]
+
+
+def crear_embed(pub: Publicacion) -> discord.Embed:
+    """Título + resumen + link a la fuente. Los límites de Discord se respetan recortando."""
+    embed = discord.Embed(title=pub.titulo[:256], description=pub.descripcion[:4000], url=pub.url)
+    if pub.pie:
+        embed.set_footer(text=pub.pie[:2000])
+    return embed
 
 
 class AsistenteBot(discord.Client):
@@ -59,33 +70,44 @@ class AsistenteBot(discord.Client):
         *,
         latido: Latido | None = None,
         canal_avisos_id: int | None = None,
+        vigia: Vigia | None = None,
+        vigia_ahora: VigiaAhora | None = None,
+        canal_vigia_id: int | None = None,
     ) -> None:
         super().__init__(intents=crear_intents(), allowed_mentions=SIN_MENCIONES)
         self._despachador = despachador
         self._guild = discord.Object(id=allowlist.guild_id)
         self._latido = latido
         self._canal_avisos_id = canal_avisos_id
-        self._tarea_latido: asyncio.Task[None] | None = None
+        self._vigia = vigia
+        self._vigia_ahora = vigia_ahora
+        self._canal_vigia_id = canal_vigia_id
+        self._tareas: list[asyncio.Task[None]] = []
         self.tree = _Arbol(self, allowlist)
         self._registrar_comandos()
 
+    async def _canal(self, canal_id: int | None) -> discord.abc.Messageable:
+        if canal_id is None:
+            raise RuntimeError("Canal no configurado")
+        return self.get_channel(canal_id) or await self.fetch_channel(canal_id)
+
     async def enviar_aviso(self, texto: str) -> None:
         """Publica en el canal de avisos, sin menciones y respetando el límite de Discord."""
-        if self._canal_avisos_id is None:
-            raise RuntimeError("No hay canal de avisos configurado")
-        canal = self.get_channel(self._canal_avisos_id) or await self.fetch_channel(
-            self._canal_avisos_id
-        )
+        canal = await self._canal(self._canal_avisos_id)
         for trozo in dividir_mensaje(texto):
             await canal.send(trozo)
 
-    async def _correr_latido(self) -> None:
+    async def publicar_vigia(self, pub: Publicacion) -> None:
+        """Publica un artículo del vigía como embed en el canal de temas."""
+        await (await self._canal(self._canal_vigia_id)).send(embed=crear_embed(pub))
+
+    async def _correr(self, tarea: Callable[[], Awaitable[None]]) -> None:
         await self.wait_until_ready()
-        await self._latido(self.enviar_aviso)
+        await tarea()
 
     async def close(self) -> None:
-        if self._tarea_latido:
-            self._tarea_latido.cancel()
+        for t in self._tareas:
+            t.cancel()
         await super().close()
 
     def _registrar_comandos(self) -> None:
@@ -106,6 +128,25 @@ class AsistenteBot(discord.Client):
                 "En pausa." if pausado else "Activo.", ephemeral=True
             )
 
+        @self.tree.command(
+            name="vigia",
+            description="Revisa ahora todos los temas activos (sin esperar su horario)",
+            guild=self._guild,
+        )
+        async def vigia(interaction: discord.Interaction) -> None:
+            if self._vigia_ahora is None:
+                await interaction.response.send_message(
+                    "El vigía no está configurado (falta DISCORD_CANAL_VIGIA_ID).", ephemeral=True
+                )
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                resumen = await self._vigia_ahora(self.publicar_vigia)
+            except Exception:
+                log.exception("Error en /vigia")
+                resumen = "Falló la revisión. Quedó registrado."
+            await interaction.followup.send(resumen, ephemeral=True)
+
     async def _fijar_pausa(self, interaction: discord.Interaction, valor: bool) -> None:
         await asyncio.to_thread(_escribir_pausa, valor)
         await interaction.response.send_message(
@@ -115,7 +156,13 @@ class AsistenteBot(discord.Client):
     async def setup_hook(self) -> None:
         await self.tree.sync(guild=self._guild)
         if self._latido is not None:
-            self._tarea_latido = asyncio.create_task(self._correr_latido())
+            self._tareas.append(
+                asyncio.create_task(self._correr(lambda: self._latido(self.enviar_aviso)))
+            )
+        if self._vigia is not None:
+            self._tareas.append(
+                asyncio.create_task(self._correr(lambda: self._vigia(self.publicar_vigia)))
+            )
 
     async def on_ready(self) -> None:
         log.info("Conectado como %s", self.user)

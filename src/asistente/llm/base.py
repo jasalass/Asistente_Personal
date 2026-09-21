@@ -6,6 +6,10 @@ class LLMNoDisponible(Exception):
     """El proveedor no respondió (límite de uso agotado, caída, etc.)."""
 
 
+class ToolCallRechazado(Exception):
+    """El proveedor rechazó la salida (tool o JSON) por no cumplir el esquema. Es corregible."""
+
+
 @dataclass(frozen=True)
 class ToolCall:
     id: str
@@ -23,5 +27,11 @@ class LLMRespuesta:
 
 class LLM(Protocol):
     def chat(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
-    ) -> LLMRespuesta: ...
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        json: bool = False,
+    ) -> LLMRespuesta:
+        """`json=True` fuerza una respuesta en JSON válido (el prompt debe mencionar "JSON")."""
+        ...

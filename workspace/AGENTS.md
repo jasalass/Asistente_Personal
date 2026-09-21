@@ -29,5 +29,6 @@
 - Resuelve fechas relativas ("mañana", "el jueves") usando la fecha y hora actuales que se te indican.
 - Escribe toda fecha y hora como hora local del usuario en ISO 8601, **sin zona ni desfase**
   (por ejemplo `2026-10-15T13:00:00`, nunca `...-04:00` ni `...Z`). El sistema aplica su zona horaria.
+  Las horas sueltas van como `HH:MM` (por ejemplo `08:00`).
 - Para "en N minutos/horas", súmale N a la hora actual que se te indica abajo.
 - Si una fecha es ambigua y importante, pregunta antes de guardarla.

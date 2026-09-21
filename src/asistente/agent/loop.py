@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from asistente.db.repos.auditoria import AuditoriaRepo
-from asistente.llm.base import LLM, ToolCall
+from asistente.llm.base import LLM, ToolCall, ToolCallRechazado
 from asistente.security.tool_registry import (
     Proposal,
     ToolArgsInvalid,
@@ -48,7 +48,21 @@ def ejecutar_agente(
 
     for _ in range(max_pasos):
         resultado.pasos += 1
-        r = llm.chat(messages, tools)
+        try:
+            r = llm.chat(messages, tools)
+        except ToolCallRechazado as e:
+            # El proveedor rechazó los argumentos por el esquema: se le informa para que corrija.
+            auditoria.registrar("agente", "llm:tool_call_rechazado", {"motivo": str(e)})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Tu última llamada a una herramienta fue rechazada: {e}. "
+                        "Vuelve a intentarla con argumentos que cumplan exactamente el esquema."
+                    ),
+                }
+            )
+            continue
         resultado.tokens_in += r.tokens_in
         resultado.tokens_out += r.tokens_out
 

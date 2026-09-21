@@ -10,10 +10,16 @@ class FakeLLM:
     def __init__(self, *respuestas: LLMRespuesta) -> None:
         self._respuestas = list(respuestas)
         self.llamadas: list[list[dict[str, Any]]] = []
+        self.tools_por_llamada: list[Any] = []
 
-    def chat(self, messages, tools=None):
+    def chat(self, messages, tools=None, *, json=False):
         self.llamadas.append([dict(m) for m in messages])
-        return self._respuestas.pop(0) if self._respuestas else LLMRespuesta(contenido="fin")
+        self.tools_por_llamada.append(tools)
+        self.ultimo_json = json
+        siguiente = self._respuestas.pop(0) if self._respuestas else LLMRespuesta(contenido="fin")
+        if isinstance(siguiente, Exception):  # permite simular fallos del proveedor
+            raise siguiente
+        return siguiente
 
 
 def llamada(nombre: str, args: dict[str, Any] | str, id: str = "c1") -> LLMRespuesta:

@@ -3,8 +3,9 @@ from typing import Any
 
 import groq
 
-from asistente.llm.base import LLMNoDisponible, LLMRespuesta, ToolCall
+from asistente.llm.base import LLMNoDisponible, LLMRespuesta, ToolCall, ToolCallRechazado
 
+_RECHAZOS_CORREGIBLES = ("tool_use_failed", "json_validate_failed")
 _REINTENTOS = 2
 _ESPERA_MAX_S = 30.0
 
@@ -19,11 +20,17 @@ class GroqLLM:
         self._reasoning_effort = reasoning_effort if "gpt-oss" in modelo else None
 
     def chat(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        json: bool = False,
     ) -> LLMRespuesta:
         params: dict[str, Any] = {"model": self._modelo, "messages": messages, "temperature": 0}
         if tools:
             params.update(tools=tools, tool_choice="auto")
+        if json:
+            params["response_format"] = {"type": "json_object"}
         if self._reasoning_effort:
             params["reasoning_effort"] = self._reasoning_effort
 
@@ -31,6 +38,14 @@ class GroqLLM:
             try:
                 r = self._client.chat.completions.create(**params)
                 break
+            except groq.BadRequestError as e:
+                cuerpo = e.body if isinstance(e.body, dict) else {}
+                cuerpo = cuerpo.get("error", cuerpo)
+                if cuerpo.get("code") not in _RECHAZOS_CORREGIBLES:
+                    raise
+                # Groq valida los argumentos (o el JSON) y los rechaza con un 400: el modelo puede
+                # corregirse si se le dice qué falló (sin el texto que generó).
+                raise ToolCallRechazado(str(cuerpo.get("message", "esquema inválido"))[:300]) from None
             except groq.RateLimitError as e:
                 if intento == _REINTENTOS:
                     raise LLMNoDisponible("Límite de uso de Groq alcanzado") from None

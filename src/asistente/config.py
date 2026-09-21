@@ -28,6 +28,10 @@ class Settings(BaseSettings):
 
     # Canal donde el heartbeat publica avisos. Sin él, el heartbeat queda desactivado.
     discord_canal_avisos_id: int | None = None
+    # Canal del vigía de temas (#vigia-temas). Sin él, el vigía queda desactivado.
+    discord_canal_vigia_id: int | None = None
+    vigia_intervalo_s: int = Field(default=600, ge=60)  # cada cuánto mira qué temas tocan
+    vigia_max_busquedas_dia: int = Field(default=30, ge=1)  # protege el cupo mensual de Tavily
     heartbeat_intervalo_s: int = Field(default=60, ge=30)
     aviso_hora_inicio: int = Field(default=8, ge=0, le=23)  # horario diurno, hora local
     aviso_hora_fin: int = Field(default=21, ge=1, le=24)
@@ -54,9 +58,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _canal_de_avisos_permitido(self) -> "Settings":
-        canal = self.discord_canal_avisos_id
-        if canal is not None and canal not in self.discord_channel_ids:
-            raise ValueError("DISCORD_CANAL_AVISOS_ID debe estar en DISCORD_CHANNEL_IDS")
+        for nombre, canal in (
+            ("DISCORD_CANAL_AVISOS_ID", self.discord_canal_avisos_id),
+            ("DISCORD_CANAL_VIGIA_ID", self.discord_canal_vigia_id),
+        ):
+            if canal is not None and canal not in self.discord_channel_ids:
+                raise ValueError(f"{nombre} debe estar en DISCORD_CHANNEL_IDS")
         if self.aviso_hora_inicio >= self.aviso_hora_fin:
             raise ValueError("AVISO_HORA_INICIO debe ser menor que AVISO_HORA_FIN")
         return self

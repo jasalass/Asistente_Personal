@@ -7,8 +7,8 @@ de un solo usuario, inspirado en la arquitectura de [OpenClaw](https://github.co
 
 > **Estado: en construcción.** Hoy existen la base segura (configuración, permisos, base de datos y
 > repositorios), el **agente** (LLM en Groq + tools de procesos, memorias y recordatorios) y el **bot de
-> Discord** que los conecta, más un **heartbeat** que te avisa por su cuenta. **Todavía no hay vigía de
-> temas** (búsqueda con Tavily).
+> Discord** que los conecta, un **heartbeat** que te avisa por su cuenta y un **vigía de temas** que
+> busca novedades en la web (Tavily) y las resume.
 
 ## Qué hace (objetivo)
 
@@ -78,6 +78,8 @@ pip install -e ".[dev]"
 2. En **SQL Editor**, ejecuta en orden:
    - [`supabase/migrations/0001_nucleo.sql`](supabase/migrations/0001_nucleo.sql)
    - [`supabase/migrations/0002_rol_bot.sql`](supabase/migrations/0002_rol_bot.sql)
+   - [`supabase/migrations/0003_vigia.sql`](supabase/migrations/0003_vigia.sql) (tablas del vigía de
+     temas; sin ella el vigía queda desactivado y lo avisa en el log al arrancar)
 3. Ejecuta aparte, con una contraseña larga y aleatoria (no se guarda en el repo):
    ```sql
    alter role asistente_bot with password 'TU_CONTRASEÑA';
@@ -100,6 +102,8 @@ Copia `.env.example` a `.env` y complétalo. **Nunca** lo subas al repositorio (
 | `DISCORD_GUILD_ID` | ID numérico de tu servidor |
 | `DISCORD_CHANNEL_IDS` | IDs numéricos de los canales permitidos, separados por coma |
 | `DISCORD_CANAL_AVISOS_ID` | Canal (uno de los anteriores) donde el heartbeat publica avisos. Sin él, no avisa |
+| `DISCORD_CANAL_VIGIA_ID` | Canal (uno de los anteriores) para el vigía de temas (`#vigia-temas`). Sin él, el vigía no corre |
+| `VIGIA_INTERVALO_S`, `VIGIA_MAX_BUSQUEDAS_DIA` | Opcionales: cada cuánto revisa qué temas tocan (600) y tope diario de búsquedas en Tavily (30) |
 | `TIMEZONE` | Zona horaria IANA (por defecto `America/Santiago`) |
 | `HEARTBEAT_INTERVALO_S`, `AVISO_HORA_INICIO`, `AVISO_HORA_FIN` | Opcionales: cada cuántos segundos late (60), y horario diurno de avisos de procesos (8 a 21) |
 
@@ -173,6 +177,29 @@ son consultas SQL y mensajes con plantilla, así que no gasta cuota de Groq ni p
   repetirlo. Se registra solo si Discord confirmó el envío; si falla, se reintenta al ciclo siguiente.
 - Con `/pausa` no envía nada. Los procesos completados o cancelados no generan avisos.
 
+### Vigía de temas
+
+Le pides por chat, por ejemplo: *"vigílame las novedades de inteligencia artificial en salud, todos
+los días a las 8"*. El agente crea el tema (`crear_tema`, `listar_temas`, `actualizar_tema`) y el
+vigía publica en `#vigia-temas` un embed por artículo: **título, resumen y link a la fuente**.
+`/vigia` revisa todos los temas activos ahora, sin esperar su horario.
+
+- **Frecuencia** por tema: `diaria`, `cada_x_dias` (con `intervalo_dias`) o `dias_especificos` (con
+  `dias_semana`, 1 = lunes a 7 = domingo), a su `hora_preferida`, como máximo una vez al día.
+- **Sin repetidos**: las URLs se normalizan (sin `utm_*`, `www.`, fragmentos ni http/https) y cada
+  artículo se marca como visto **solo después de publicarse**. Si algo falla a medias (Tavily, Groq o
+  Discord), el tema se reintenta y lo ya publicado no se repite.
+- **Resúmenes parafraseados, nunca copiados**: además de pedirlo en el prompt, el código rechaza
+  cualquier resumen que comparta 8 palabras seguidas con el original; reintenta indicándole la frase
+  que copió y, si vuelve a fallar, publica solo título y link. Se resume el **extracto** que entrega
+  Tavily (~1.000 caracteres), no el artículo completo.
+- **El contenido web se trata como no confiable**: lo resume una llamada aparte, sin tools y sin acceso
+  a tus datos, que solo devuelve `{"resumen": ...}`. **El link nunca lo produce el modelo**: sale del
+  buscador y se valida (http/https público, sin credenciales ni IPs privadas). A título y resumen se
+  les quitan enlaces, markdown y menciones. El agente de chat **nunca ve** el contenido de los artículos.
+- **Presupuesto**: máximo de búsquedas por día (30 por defecto) para cuidar tu cupo mensual de Tavily,
+  y respeta `/pausa`.
+
 ## Estructura
 
 ```
@@ -192,6 +219,7 @@ son consultas SQL y mensajes con plantilla, así que no gasta cuota de Groq ni p
 │   ├── agent/               # tools, bucle de tool calling, prompt y servicio por mensaje
 │   ├── discord_bot/         # bot, despachador con allowlist, historial, comandos de pausa
 │   ├── heartbeat/           # reglas de avisos (SQL + plantillas) y ciclo de envío
+│   ├── vigia/               # búsqueda (Tavily), calendario, URLs, resumidor aislado y ciclo
 │   ├── gateway.py           # arranque: `python -m asistente`
 │   └── db/                  # conexión, modelos y repositorios
 │       └── repos/           # procesos, memorias, recordatorios, auditoría, kill switch
@@ -207,6 +235,6 @@ son consultas SQL y mensajes con plantilla, así que no gasta cuota de Groq ni p
 - [x] Bot de Discord con allowlist, memoria conversacional en RAM y `/pausa` `/reanudar` `/estado`
 - [ ] Persistencia de aprobaciones (`acciones_pendientes`) y botones Aprobar/Rechazar en Discord
 - [x] Heartbeat: chequeo proactivo de procesos y recordatorios
-- [ ] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
+- [x] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
 - [ ] Google Calendar / Gmail, Microsoft Graph
 - [ ] Acciones acotadas con guardrails (whitelist, modo "propone, no ejecuta", auditoría)

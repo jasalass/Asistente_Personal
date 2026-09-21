@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import psycopg
+
 from asistente.agent.loop import ResultadoAgente
 from asistente.agent.service import responder
 from asistente.config import Settings, get_settings
@@ -16,6 +18,8 @@ from asistente.discord_bot.despachador import Despachador
 from asistente.heartbeat.runner import latido
 from asistente.llm.groq import GroqLLM
 from asistente.security.allowlist import Allowlist
+from asistente.vigia import runner as vigia_runner
+from asistente.vigia.tavily import TavilyBuscador
 
 log = logging.getLogger(__name__)
 
@@ -54,12 +58,72 @@ def construir_bot(cfg: Settings) -> AsistenteBot:
                 hora_fin=cfg.aviso_hora_fin,
             )
 
+    vigia_fn = vigia_ahora_fn = None
+    if cfg.discord_canal_vigia_id is None:
+        log.warning("DISCORD_CANAL_VIGIA_ID no está definido: el vigía queda desactivado")
+    elif not tablas_del_vigia_existen():
+        log.warning(
+            "Faltan las tablas del vigía: ejecuta supabase/migrations/0003_vigia.sql. "
+            "El vigía queda desactivado."
+        )
+    else:
+        buscador = TavilyBuscador(cfg.tavily_api_key.get_secret_value())
+        llm_resumen = GroqLLM(
+            cfg.groq_api_key.get_secret_value(), cfg.modelo_resumen, reasoning_effort="low"
+        )
+
+        def vigia_fn(publicar):
+            return vigia_runner.vigia(
+                publicar,
+                buscador=buscador,
+                llm=llm_resumen,
+                tz=tz,
+                intervalo_s=cfg.vigia_intervalo_s,
+                max_busquedas_dia=cfg.vigia_max_busquedas_dia,
+            )
+
+        async def vigia_ahora_fn(publicar):
+            hechos = await vigia_runner.ciclo(
+                buscador=buscador,
+                llm=llm_resumen,
+                publicar=publicar,
+                tz=tz,
+                ahora=datetime.now(tz),
+                max_busquedas_dia=cfg.vigia_max_busquedas_dia,
+                max_por_ciclo=5,
+                forzar=True,
+            )
+            return resumen_manual(hechos)
+
     return AsistenteBot(
         allowlist,
         Despachador(allowlist, responder_async),
         latido=latido_fn,
         canal_avisos_id=cfg.discord_canal_avisos_id,
+        vigia=vigia_fn,
+        vigia_ahora=vigia_ahora_fn,
+        canal_vigia_id=cfg.discord_canal_vigia_id,
     )
+
+
+def resumen_manual(hechos: list) -> str:
+    if not hechos:
+        return "No hay temas activos para revisar (o se alcanzó el límite diario de búsquedas)."
+    lineas = []
+    for tema, r in hechos:
+        estado = f"{r.publicados} publicados de {r.nuevos} nuevos ({r.encontrados} encontrados)"
+        lineas.append(f"• {tema.nombre}: {estado}" + (f" — error: {r.error}" if r.error else ""))
+    return "\n".join(lineas)
+
+
+def tablas_del_vigia_existen() -> bool:
+    try:
+        with transaccion() as conn:
+            conn.execute("select 1 from temas_seguimiento limit 1")
+            conn.execute("select 1 from articulos_vistos limit 1")
+    except psycopg.errors.UndefinedTable:
+        return False
+    return True
 
 
 def verificar_base() -> None:
