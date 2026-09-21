@@ -107,8 +107,9 @@ class ProcesoRepo:
         self, proceso_id: UUID, tipo: EventoTipo, contenido: str
     ) -> ProcesoEvento:
         fila = self._conn.execute(
-            "insert into proceso_eventos (proceso_id, tipo, contenido) values (%s, %s, %s) "
-            "returning *",
+            # clock_timestamp(): now() es fijo dentro de una transacción y empataría el orden.
+            "insert into proceso_eventos (proceso_id, tipo, contenido, creado_en) "
+            "values (%s, %s, %s, clock_timestamp()) returning *",
             (proceso_id, tipo.value, contenido),
         ).fetchone()
         return ProcesoEvento.model_validate(fila)

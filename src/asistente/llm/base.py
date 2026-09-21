@@ -1,0 +1,27 @@
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+
+class LLMNoDisponible(Exception):
+    """El proveedor no respondió (límite de uso agotado, caída, etc.)."""
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str  # JSON crudo tal como lo generó el modelo; se valida después
+
+
+@dataclass(frozen=True)
+class LLMRespuesta:
+    contenido: str | None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    tokens_in: int = 0
+    tokens_out: int = 0
+
+
+class LLM(Protocol):
+    def chat(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> LLMRespuesta: ...

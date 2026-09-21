@@ -1,7 +1,19 @@
+import json
+from enum import StrEnum
+
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from asistente.security.approvals import payload_hash
-from asistente.security.tool_registry import Level, Proposal, ToolDenied, ToolRegistry, ToolSpec
+from asistente.security.tool_registry import (
+    Level,
+    Proposal,
+    ToolArgsInvalid,
+    ToolDenied,
+    ToolRegistry,
+    ToolSpec,
+    compactar_schema,
+)
 
 
 def make_registry(calls: list) -> ToolRegistry:
@@ -76,6 +88,55 @@ def test_registro_duplicado_falla():
     reg = make_registry([])
     with pytest.raises(ValueError):
         reg.register(ToolSpec("leer", Level.PROHIBIDO, "intento de degradar", lambda: None))
+
+
+class _Args(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    to: str
+
+
+def test_argumentos_invalidos_no_llegan_al_handler_ni_generan_propuesta():
+    calls = []
+    reg = ToolRegistry()
+    reg.register(ToolSpec("enviar", Level.PROPONE, "e", lambda **k: calls.append(k), _Args))
+    reg.register(ToolSpec("leer", Level.AUTO, "l", lambda **k: calls.append(k), _Args))
+    for tool in ("enviar", "leer"):
+        for args in ({}, {"to": 123}, {"to": "a@b.cl", "extra": 1}):
+            with pytest.raises(ToolArgsInvalid):
+                reg.invoke(tool, args)
+    assert calls == []
+
+
+def test_definiciones_excluyen_prohibidas_e_incluyen_esquema():
+    reg = ToolRegistry()
+    reg.register(ToolSpec("leer", Level.AUTO, "lee", lambda **k: None, _Args))
+    reg.register(ToolSpec("pagar", Level.PROHIBIDO, "paga", lambda **k: None))
+    defs = reg.definiciones()
+    assert [d["function"]["name"] for d in defs] == ["leer"]
+    assert "to" in defs[0]["function"]["parameters"]["properties"]
+
+
+class _Estado(StrEnum):
+    A = "a"
+    B = "b"
+
+
+class _Complejo(BaseModel):
+    title: str  # una propiedad llamada 'title' no debe perderse
+    estado: _Estado | None = None
+    tags: list[str] | None = None
+
+
+def test_compactar_schema_inlinea_defs_quita_ruido_y_conserva_propiedades():
+    schema = compactar_schema(_Complejo.model_json_schema())
+    assert "$defs" not in schema and "$ref" not in json.dumps(schema)
+    assert set(schema["properties"]) == {"title", "estado", "tags"}
+    assert schema["properties"]["estado"]["enum"] == ["a", "b"]
+    assert schema["properties"]["tags"]["type"] == "array"
+    assert schema["required"] == ["title"]
+    assert "default" not in json.dumps(schema)
+    assert len(json.dumps(schema)) < len(json.dumps(_Complejo.model_json_schema()))
 
 
 def test_hash_es_estable_ante_orden_de_claves():

@@ -26,7 +26,8 @@ class MemoriaRepo:
                 "Una memoria de origen externo requiere confirmación del owner"
             )
         fila = self._conn.execute(
-            "insert into memorias (contenido, origen, etiquetas) values (%s, %s, %s) "
+            "insert into memorias (contenido, origen, etiquetas, creado_en) "
+            "values (%s, %s, %s, clock_timestamp()) "
             "returning id, contenido, origen, etiquetas, creado_en",
             (contenido, origen.value, list(etiquetas)),
         ).fetchone()

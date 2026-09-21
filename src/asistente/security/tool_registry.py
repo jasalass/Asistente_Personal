@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from pydantic import BaseModel, ValidationError
+
 from asistente.security.approvals import payload_hash
 
 
@@ -16,12 +18,21 @@ class ToolDenied(Exception):
     pass
 
 
+class ToolArgsInvalid(Exception):
+    """Los argumentos que generó el LLM no cumplen el esquema de la tool."""
+
+
+class ToolError(Exception):
+    """Fallo esperable dentro de una tool (p. ej. id inexistente). Se devuelve al LLM."""
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
     level: Level
     description: str
     handler: Callable[..., Any]
+    params: type[BaseModel] | None = None  # esquema de argumentos; None = sin validar
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,36 @@ class Proposal:
     tool: str
     args: dict[str, Any]
     hash: str
+
+
+def compactar_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Reduce el JSON Schema de Pydantic a lo que el LLM necesita, para gastar menos tokens.
+
+    Inlinea $defs, quita `title` y `default`, y colapsa `anyOf [X, null]` a X.
+    """
+    defs = schema.get("$defs", {})
+
+    def limpiar(nodo: Any) -> Any:
+        if isinstance(nodo, list):
+            return [limpiar(x) for x in nodo]
+        if not isinstance(nodo, dict):
+            return nodo
+        if "$ref" in nodo:
+            return limpiar(defs[nodo["$ref"].rsplit("/", 1)[-1]])
+        if "anyOf" in nodo:
+            reales = [x for x in nodo["anyOf"] if x.get("type") != "null"]
+            if len(reales) == 1:
+                resto = {k: v for k, v in nodo.items() if k != "anyOf"}
+                return limpiar({**reales[0], **resto})
+        salida = {}
+        for k, v in nodo.items():
+            if k in ("title", "default", "$defs"):
+                continue
+            # Los nombres de propiedades son datos, no metadatos: se conservan tal cual.
+            salida[k] = {n: limpiar(s) for n, s in v.items()} if k == "properties" else limpiar(v)
+        return salida
+
+    return limpiar(schema)
 
 
 class ToolRegistry:
@@ -50,14 +91,48 @@ class ToolRegistry:
             raise ToolDenied(f"Tool no registrada: {name}")
         return spec
 
+    def definiciones(self) -> list[dict[str, Any]]:
+        """Esquemas para el LLM. Las tools prohibidas ni siquiera se le muestran."""
+        vacio = {"type": "object", "properties": {}}
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": s.name,
+                    "description": s.description,
+                    "parameters": (
+                        compactar_schema(s.params.model_json_schema()) if s.params else vacio
+                    ),
+                },
+            }
+            for s in self._tools.values()
+            if s.level is not Level.PROHIBIDO
+        ]
+
+    @staticmethod
+    def _validar(spec: ToolSpec, args: dict[str, Any]) -> dict[str, Any]:
+        if spec.params is None:
+            return args
+        try:
+            validado = spec.params.model_validate(args)
+        except ValidationError as e:
+            # Solo ubicación y motivo: nunca el valor recibido.
+            detalle = "; ".join(
+                f"{'.'.join(str(x) for x in err['loc']) or 'argumentos'}: {err['msg']}"
+                for err in e.errors()
+            )
+            raise ToolArgsInvalid(detalle) from None
+        return validado.model_dump(exclude_unset=True)
+
     def invoke(self, name: str, args: dict[str, Any]) -> Any | Proposal:
         """AUTO ejecuta; PROPONE devuelve una Proposal sin ejecutar; PROHIBIDO lanza."""
         spec = self.get(name)
         if spec.level is Level.PROHIBIDO:
             raise ToolDenied(f"Tool prohibida: {name}")
+        kwargs = self._validar(spec, args)
         if spec.level is Level.PROPONE:
             return Proposal(tool=name, args=args, hash=payload_hash(name, args))
-        return spec.handler(**args)
+        return spec.handler(**kwargs)
 
     def execute_approved(self, proposal: Proposal, *, approved_hash: str) -> Any:
         """Ejecuta una propuesta solo si el hash aprobado coincide con el payload exacto."""
@@ -66,4 +141,4 @@ class ToolRegistry:
             raise ToolDenied(f"La tool {proposal.tool} no admite ejecución por aprobación")
         if approved_hash != payload_hash(proposal.tool, proposal.args):
             raise ToolDenied("El payload no coincide con lo aprobado")
-        return spec.handler(**proposal.args)
+        return spec.handler(**self._validar(spec, proposal.args))

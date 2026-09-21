@@ -35,6 +35,13 @@ def test_crear_registra_evento_inicial(repo):
     assert [e.tipo for e in eventos] == [EventoTipo.NOTA]
 
 
+def test_eventos_de_una_misma_transaccion_salen_del_mas_nuevo_al_mas_viejo(repo):
+    p = repo.crear(ProcesoNuevo(nombre="X"))
+    for n in ("uno", "dos", "tres"):
+        repo.agregar_evento(p.id, EventoTipo.NOTA, n)
+    assert [e.contenido for e in repo.eventos(p.id)] == ["tres", "dos", "uno", "Proceso creado"]
+
+
 def test_actualizar_solo_toca_lo_informado(repo):
     p = repo.crear(ProcesoNuevo(nombre="X", proxima_accion="llamar", esperando_a="Juan"))
     q = repo.actualizar(p.id, ProcesoActualizacion(proxima_accion="escribir"))

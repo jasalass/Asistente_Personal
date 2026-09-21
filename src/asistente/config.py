@@ -22,6 +22,10 @@ class Settings(BaseSettings):
 
     timezone: str = "America/Santiago"
 
+    # Llama 3.x ya no está en el catálogo de Groq; estos dos pasaron la prueba de tool calling.
+    modelo_agente: str = "openai/gpt-oss-120b"
+    modelo_resumen: str = "openai/gpt-oss-20b"
+
     @field_validator("groq_api_key", "tavily_api_key", "database_url", "discord_token")
     @classmethod
     def _secreto_no_vacio(cls, v: SecretStr) -> SecretStr:

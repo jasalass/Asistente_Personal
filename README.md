@@ -6,8 +6,9 @@ de un solo usuario, inspirado en la arquitectura de [OpenClaw](https://github.co
 (gateway único, heartbeat proactivo, skills en markdown) pero con la seguridad como prioridad.
 
 > **Estado: en construcción.** Hoy existen la base segura (configuración, permisos, base de datos y
-> repositorios). **Todavía no hay bot de Discord, ni conexión al LLM, ni heartbeat**: no hay nada que
-> "arrancar" aún. Lo que sí puedes correr son las verificaciones y los tests.
+> repositorios) y el **agente** (LLM en Groq + tools de procesos, memorias y recordatorios). **Todavía
+> no hay bot de Discord ni heartbeat**: no hay nada que "arrancar" como servicio aún. Lo que sí puedes
+> correr son las verificaciones (incluida una conversación real con el agente) y los tests.
 
 ## Qué hace (objetivo)
 
@@ -17,7 +18,9 @@ de un solo usuario, inspirado en la arquitectura de [OpenClaw](https://github.co
 - **Vigía de temas**: busca novedades de los temas que sigues (Tavily), las resume parafraseadas
   y con link a la fuente, y no repite artículos ya vistos.
 - **Interfaz**: Discord, un canal por función.
-- **LLM**: Groq (Llama 3.3 70B). **Datos**: Supabase (Postgres).
+- **LLM**: Groq. Agente: `openai/gpt-oss-120b`; resúmenes: `openai/gpt-oss-20b` (Llama 3.x ya no está
+  en el catálogo de Groq; ambos modelos se pueden cambiar con `MODELO_AGENTE` / `MODELO_RESUMEN`).
+  **Datos**: Supabase (Postgres).
 
 ## Niveles de autoridad
 
@@ -43,6 +46,12 @@ de un solo usuario, inspirado en la arquitectura de [OpenClaw](https://github.co
 - **Secretos solo en variables de entorno**; nunca se muestran en `repr`/logs de la configuración y
   una clave vacía falla al arrancar.
 - **Kill switch**: la tabla `estado_sistema` permite pausar el sistema; si falta la fila, asume pausa.
+- **Argumentos de tools validados**: lo que genera el LLM se valida con Pydantic antes de tocar la
+  base; los campos inventados se rechazan y los mensajes de error no repiten el valor recibido.
+- **Reglas del agente fuera del código de negocio**: `workspace/` (personalidad, reglas y skills en
+  markdown) es de solo lectura para el agente; ninguna tool escribe ahí.
+- **Auditoría de cada tool**: cada llamada del agente (ok, denegada, con error o propuesta) queda en
+  `auditoria`, y cada mensaje en `ejecuciones` con tokens y duración.
 
 ## Requisitos
 
@@ -111,17 +120,36 @@ ruff check .
 `check_db.py` debe terminar en `Todo bien`. Confirma, entre otras cosas, que el rol puede escribir en
 `procesos` pero **no** modificar `auditoria` ni hacer `TRUNCATE`.
 
+### 5. Probar el agente de verdad
+
+```powershell
+# Conversación real con Groq contra tu base (todo se revierte; consume ~30k tokens de tu cuota)
+$env:PYTHONPATH = "src"; $env:PYTHONIOENCODING = "utf-8"; python scripts/check_agent.py
+```
+
+Envía cinco mensajes (crear un proceso, actualizarlo con un recordatorio, listar pendientes, guardar
+una preferencia y un intento de sacarle las claves) y muestra qué tools usó el agente y qué quedó en
+la base antes de revertir. Sirve para detectar regresiones al cambiar prompts, skills o tools.
+
 ## Estructura
 
 ```
 ├── supabase/migrations/     # SQL versionado: esquema y rol de mínimos privilegios
-├── scripts/check_db.py      # verificación de conexión y permisos
+├── workspace/               # comportamiento del agente en markdown (solo lectura para él)
+│   ├── SOUL.md              # personalidad y tono
+│   ├── AGENTS.md            # reglas de operación, autoridad y honestidad
+│   └── skills/              # instrucciones por dominio (procesos.md)
+├── scripts/
+│   ├── check_db.py          # verificación de conexión y permisos
+│   └── check_agent.py       # conversación real con Groq + base (se revierte)
 ├── src/asistente/
 │   ├── config.py            # configuración con Pydantic (secretos ocultos)
 │   ├── security/            # allowlist, registro de tools, aprobaciones
+│   ├── llm/                 # interfaz LLM y cliente de Groq (reintentos por límite de uso)
+│   ├── agent/               # tools, bucle de tool calling, prompt y servicio por mensaje
 │   └── db/                  # conexión, modelos y repositorios
 │       └── repos/           # procesos, memorias, recordatorios, auditoría, kill switch
-└── tests/                   # unitarios y de integración contra la base
+└── tests/                   # unitarios (LLM simulado) y de integración contra la base
 ```
 
 ## Roadmap
@@ -129,7 +157,8 @@ ruff check .
 - [x] Núcleo de seguridad: configuración, allowlist, registro de tools, aprobaciones
 - [x] Esquema de datos y rol de mínimos privilegios
 - [x] Repositorios de datos (procesos, memorias, recordatorios, auditoría, kill switch)
-- [ ] Capa del LLM (Groq) y tools del agente registradas con su nivel de autoridad
+- [x] Capa del LLM (Groq) y tools del agente registradas con su nivel de autoridad
+- [ ] Persistencia de aprobaciones (`acciones_pendientes`) y memoria conversacional entre mensajes
 - [ ] Bot de Discord (con allowlist y botones de aprobación)
 - [ ] Heartbeat: chequeo proactivo de procesos y recordatorios
 - [ ] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
