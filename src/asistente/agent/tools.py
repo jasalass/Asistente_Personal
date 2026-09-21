@@ -36,6 +36,7 @@ from asistente.db.models import (
     TemaNuevo,
 )
 from asistente.db.repos.agenda import EventoRepo
+from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.memorias import MemoriaRepo
 from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.recordatorios import RecordatorioRepo
@@ -181,6 +182,17 @@ class ActualizarTemaArgs(_RefTema, TemaActualizacion):
 class CrearRecordatorioArgs(_SinNulos):
     texto: str = Field(min_length=1, max_length=500)
     fecha: FechaHoraLocal
+
+
+class CancelarRecordatorioArgs(_SinNulos):
+    id: UUID | None = Field(default=None, description="Id del recordatorio, si ya lo conoces")
+    recordatorio: str | None = Field(default=None, min_length=1, description="Texto (o parte) del recordatorio")
+
+    @model_validator(mode="after")
+    def _uno_solo(self) -> "CancelarRecordatorioArgs":
+        if (self.id is None) == (self.recordatorio is None):
+            raise ValueError("indica el recordatorio con 'id' o con 'recordatorio' (solo uno)")
+        return self
 
 
 class CrearEventoArgs(_SinNulos):
@@ -417,6 +429,32 @@ def construir_registro(
         ]
         return resultado
 
+    def cancelar_recordatorio(id=None, recordatorio=None):
+        if id is not None:
+            r = recordatorios.obtener(id)
+            if r is None:
+                raise ToolError("No existe un recordatorio con ese id. Usa listar_agenda.")
+        else:
+            candidatos = recordatorios.buscar_por_texto(recordatorio)
+            exactos = [c for c in candidatos if c.texto.casefold() == recordatorio.casefold()]
+            candidatos = exactos or candidatos
+            candidatos = [c for c in candidatos if not c.enviado] or candidatos  # prefiere los pendientes
+            if not candidatos:
+                raise ToolError(f"No encontré ningún recordatorio que coincida con '{recordatorio}'.")
+            if len(candidatos) > 1:
+                opciones = "; ".join(
+                    f"{c.texto} ({c.fecha.astimezone(tz):%d/%m %H:%M}, id {c.id})" for c in candidatos
+                )
+                raise ToolError(f"Varios recordatorios coinciden: {opciones}. Repite con el id.")
+            r = candidatos[0]
+        recordatorios.eliminar(r.id)
+        cuando = f"{r.fecha.astimezone(tz):%d/%m %H:%M}"
+        # Se borra la fila; queda constancia de qué era para poder reconstruirlo si fue un error.
+        AuditoriaRepo(conn).registrar(
+            "agente", "recordatorio_cancelado", {"texto": r.texto, "fecha": cuando, "enviado": r.enviado}
+        )
+        return {"cancelado": {"texto": r.texto, "fecha": cuando, "ya_avisado": r.enviado}}
+
     def exigir_agenda() -> None:
         if not eventos.disponible():
             raise ToolError(
@@ -494,6 +532,12 @@ def construir_registro(
             ),
             listar_agenda,
             ListarAgendaArgs,
+        ),
+        (
+            "cancelar_recordatorio",
+            "Cancela (borra) un recordatorio, por 'id' o por parte de su texto.",
+            cancelar_recordatorio,
+            CancelarRecordatorioArgs,
         ),
         (
             "crear_evento",

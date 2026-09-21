@@ -6,4 +6,4 @@
 - Tras crear o modificar un evento, repite lo que dice `resumen` (incluida la vigencia) y las `proximas` fechas, **con las SUSPENDIDAS y su motivo**. Si viene `advertencia`, díselo al usuario y corrígelo si no lo pidió.
 - Un día puntual: `actualizar_evento` con `omitir_fecha` ("ese lunes no hay clases") o `mantener_fecha` ("ese lunes sí hay, aunque sea feriado"). Cambiar hora, días o aviso: `actualizar_evento`. Para desactivarlo: `activo: false`. Los eventos no se borran.
 - **Una pregunta no es una orden de guardar.** Si el usuario pregunta por algo que ya te contó, consulta (`listar_agenda`, `listar_procesos`, `buscar_memorias`); no lo guardes de nuevo.
-- Algo que ocurre una sola vez y hay que recordar: `crear_recordatorio`.
+- Algo que ocurre una sola vez y hay que recordar: `crear_recordatorio`. Para quitar uno: `cancelar_recordatorio` (por su texto, sin buscar antes). Un evento recurrente no se cancela: se pausa con `actualizar_evento`.
