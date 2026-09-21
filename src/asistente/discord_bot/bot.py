@@ -5,6 +5,7 @@ import socket
 from collections.abc import Awaitable, Callable
 
 import discord
+import psycopg
 from discord import app_commands
 
 from asistente.db.connection import transaccion
@@ -18,6 +19,7 @@ from asistente.vigia.runner import Publicacion, Publicar
 log = logging.getLogger(__name__)
 
 MSG_ERROR = "Ocurrió un error interno y no pude procesar tu mensaje. Quedó registrado."
+MSG_SIN_CONEXION = "Ahora mismo no tengo conexión con mi base de datos. Reintenta en un minuto."
 MSG_NO_AUTORIZADO = "No autorizado."
 
 # Un texto del LLM jamás debe poder mencionar a nadie (@everyone, roles, usuarios).
@@ -76,7 +78,7 @@ class AsistenteBot(discord.Client):
         vigia_ahora: VigiaAhora | None = None,
         canal_vigia_id: int | None = None,
         uso: Callable[[], Awaitable[str]] | None = None,
-        vigilar_bloqueo: Callable[[], bool] | None = None,
+        vigilar_bloqueo: Callable[[], bool | None] | None = None,
         host: str | None = None,
     ) -> None:
         super().__init__(intents=crear_intents(), allowed_mentions=SIN_MENCIONES)
@@ -125,15 +127,26 @@ class AsistenteBot(discord.Client):
         except Exception:
             log.warning("No se pudo publicar el aviso de estado", exc_info=True)
 
-    async def _vigilar(self, intervalo_s: float = 60.0) -> None:
-        """Si se pierde el bloqueo de instancia única, se detiene: mejor caer que duplicar."""
+    async def _vigilar(self, intervalo_s: float = 60.0, intervalo_incierto_s: float = 10.0) -> None:
+        """Si OTRA instancia toma el bloqueo, se detiene: mejor caer que duplicar.
+
+        Un corte de red (`None`) no cuenta como pérdida: se sigue esperando y se revisa más seguido
+        para decidir cuanto antes al volver la conexión.
+        """
+        incierto = False
         while True:
-            await asyncio.sleep(intervalo_s)
-            if not await asyncio.to_thread(self._vigilar_bloqueo):
-                log.critical("Se perdió el bloqueo de instancia única: el proceso se detiene")
+            await asyncio.sleep(intervalo_incierto_s if incierto else intervalo_s)
+            estado = await asyncio.to_thread(self._vigilar_bloqueo)
+            if estado is False:
+                log.critical("Otra instancia tomó el bloqueo de instancia única: el proceso se detiene")
                 self.bloqueo_perdido = True
                 await self.close()
                 return
+            if estado is None and not incierto:
+                log.warning("Sin conexión a la base: no puedo confirmar la instancia única; sigo esperando")
+            elif estado is not None and incierto:
+                log.info("Conexión restablecida: sigo siendo la única instancia")
+            incierto = estado is None
 
     async def close(self) -> None:
         if self._avisado_inicio and not self._avisado_cierre:
@@ -234,6 +247,9 @@ class AsistenteBot(discord.Client):
         try:
             async with message.channel.typing():
                 respuesta = await self._despachador.manejar(**datos, texto=message.content)
+        except psycopg.OperationalError:
+            log.warning("Sin conexión a la base de datos al procesar un mensaje")
+            respuesta = MSG_SIN_CONEXION
         except Exception:  # el bot no debe caerse por un mensaje
             log.exception("Error procesando un mensaje")
             respuesta = MSG_ERROR

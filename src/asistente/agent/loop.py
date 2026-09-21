@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from asistente.db.repos.auditoria import AuditoriaRepo
-from asistente.llm.base import LLM, ToolCall, ToolCallRechazado
+from asistente.llm.base import LLM, LLMNoDisponible, ToolCall, ToolCallRechazado
 from asistente.security.tool_registry import (
     Proposal,
     ToolArgsInvalid,
@@ -16,6 +16,13 @@ from asistente.security.tool_registry import (
 )
 
 MSG_SIN_RESPUESTA = "No logré completar la tarea en el número de pasos permitido. Intenta de nuevo."
+MSG_HECHO_SIN_RESPUESTA = (
+    "Alcancé a hacer esto, pero no pude redactar la respuesta completa "
+    "(límite de uso del modelo). Reintenta en un minuto si algo no quedó como querías:"
+)
+
+# Las herramientas que solo consultan no cuentan como "algo que se hizo".
+_SOLO_LECTURA = ("listar_", "ver_", "buscar_", "habilitar_")
 
 
 @dataclass
@@ -27,6 +34,24 @@ class ResultadoAgente:
     pasos: int = 0
     usa_respaldo: bool = False  # alguna llamada la atendió un modelo de respaldo
     modelos: set[str] = field(default_factory=set)
+    acciones: list[str] = field(default_factory=list)  # lo que se cambió, en palabras del código
+    parcial: bool = False  # se hizo trabajo pero no se pudo redactar la respuesta
+
+
+def _describir_accion(nombre: str, salida: Any) -> str | None:
+    """Una línea que cuenta qué hizo una herramienta que modifica datos, sin depender del modelo."""
+    if nombre.startswith(_SOLO_LECTURA):
+        return None
+    if isinstance(salida, dict):
+        if salida.get("error"):
+            return None  # falló: no hay nada hecho que contar
+        if salida.get("resumen"):
+            return f"• {salida['resumen']}"
+        if isinstance(salida.get("cancelado"), dict):
+            return f"• Cancelé el recordatorio «{salida['cancelado'].get('texto')}»"
+        if salida.get("nombre") or salida.get("texto"):
+            return f"• {nombre}: {salida.get('nombre') or salida.get('texto')}"
+    return f"• {nombre}"
 
 
 def ejecutar_agente(
@@ -65,6 +90,14 @@ def ejecutar_agente(
                 }
             )
             continue
+        except LLMNoDisponible:
+            if not resultado.acciones:
+                raise  # no se hizo nada: el servicio responde con el aviso habitual
+            # Ya hubo cambios (y se confirman en la base): decirlo, en vez de un "no puedo pensar"
+            # que haría creer que no pasó nada.
+            resultado.respuesta = MSG_HECHO_SIN_RESPUESTA + "\n" + "\n".join(resultado.acciones)
+            resultado.parcial = True
+            return resultado
         resultado.tokens_in += r.tokens_in
         resultado.tokens_out += r.tokens_out
         resultado.usa_respaldo = resultado.usa_respaldo or r.respaldo
@@ -131,4 +164,6 @@ def _ejecutar_tool(
         return {"estado": "pendiente_de_aprobacion", "mensaje": "El usuario debe aprobarla."}
 
     auditoria.registrar("agente", f"tool:{tc.name}", {"estado": "ok", "args": args})
+    if (linea := _describir_accion(tc.name, salida)) is not None:
+        resultado.acciones.append(linea)
     return salida

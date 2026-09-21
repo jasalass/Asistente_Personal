@@ -1,9 +1,13 @@
+import math
 import time
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from asistente.agenda.atajos import detectar_consulta, redactar
+from asistente.agenda.consulta import consultar
+from asistente.agenda.feriados import CalendarioFeriados, Feriados
 from asistente.agent.loop import ResultadoAgente, ejecutar_agente
 from asistente.agent.prompt import construir_prompt
 from asistente.agent.tools import construir_registro
@@ -11,6 +15,7 @@ from asistente.db.connection import Conn
 from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
 from asistente.llm.base import LLM, LLMNoDisponible
+from asistente.llm.presupuesto import presupuesto_de_espera
 
 MSG_PAUSADO = "Estoy en pausa. Usa /reanudar para volver a activarme."
 NOTA_RESPALDO = (
@@ -18,6 +23,18 @@ NOTA_RESPALDO = (
     "revisa que lo que hice sea lo que pediste.)_"
 )
 MSG_LLM_CAIDO = "No puedo pensar en este momento (límite de uso o caída del servicio). Reintenta en unos minutos."
+# Espera TOTAL tolerada por mensaje ante un límite por minuto de Groq. Pasado esto se le dice al
+# usuario cuánto esperar, en vez de dejarlo mirando "escribiendo…" (un mensaje llegó a tardar 107 s).
+PRESUPUESTO_ESPERA_S = 45.0
+
+
+def _mensaje_sin_modelo(e: LLMNoDisponible) -> str:
+    if e.espera_s:
+        return (
+            "Estoy al límite de uso del modelo (Groq). "
+            f"Reintenta en unos {math.ceil(e.espera_s)} segundos."
+        )
+    return MSG_LLM_CAIDO
 
 
 def responder(
@@ -28,6 +45,7 @@ def responder(
     tz: ZoneInfo,
     ahora: datetime,
     historial: Sequence[dict[str, Any]] = (),
+    feriados: CalendarioFeriados | None = None,
 ) -> ResultadoAgente:
     """Punto de entrada por mensaje del owner: kill switch, agente y registro de la ejecución.
 
@@ -38,26 +56,42 @@ def responder(
 
     auditoria = AuditoriaRepo(conn)
     inicio = time.monotonic()
-    try:
-        resultado = ejecutar_agente(
-            mensaje,
-            llm=llm,
-            registro=construir_registro(conn, tz, ahora),
-            auditoria=auditoria,
-            system_prompt=construir_prompt(ahora, tz),
-            historial=historial,
+
+    hoy = ahora.astimezone(tz).date()
+    if consulta := detectar_consulta(mensaje, hoy):
+        # "Qué tengo mañana": se responde desde el código, sin modelo (ver agenda/atajos.py).
+        dias = consultar(conn, consulta.desde, consulta.dias, tz, feriados or Feriados())
+        auditoria.registrar_ejecucion(
+            "mensaje",
+            duracion_ms=int((time.monotonic() - inicio) * 1000),
+            tokens_in=0,
+            tokens_out=0,
+            detalle={"atajo": "agenda", "consulta": consulta.etiqueta},
         )
+        return ResultadoAgente(respuesta=redactar(dias, consulta, hoy), pasos=0)
+
+    try:
+        with presupuesto_de_espera(PRESUPUESTO_ESPERA_S):
+            resultado = ejecutar_agente(
+                mensaje,
+                llm=llm,
+                registro=construir_registro(conn, tz, ahora, feriados),
+                auditoria=auditoria,
+                system_prompt=construir_prompt(ahora, tz),
+                historial=historial,
+            )
     except LLMNoDisponible as e:
         auditoria.registrar_ejecucion(
             "mensaje", duracion_ms=int((time.monotonic() - inicio) * 1000), error=str(e)
         )
-        return ResultadoAgente(respuesta=MSG_LLM_CAIDO)
+        return ResultadoAgente(respuesta=_mensaje_sin_modelo(e))
 
     auditoria.registrar_ejecucion(
         "mensaje",
         duracion_ms=int((time.monotonic() - inicio) * 1000),
         tokens_in=resultado.tokens_in,
         tokens_out=resultado.tokens_out,
+        error="respuesta parcial: el modelo no estuvo disponible" if resultado.parcial else None,
         detalle={
             "pasos": resultado.pasos,
             "propuestas": len(resultado.propuestas),

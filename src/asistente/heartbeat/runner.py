@@ -6,6 +6,8 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+import psycopg
+
 from asistente.db.connection import Conn, transaccion
 from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
@@ -93,6 +95,9 @@ async def latido(
                 hora_inicio=hora_inicio,
                 hora_fin=hora_fin,
             )
+        except psycopg.OperationalError:
+            # Sin red o base inalcanzable: es transitorio, no un error del programa.
+            log.warning("Heartbeat sin conexión a la base de datos: se reintenta en el próximo ciclo")
         except Exception:
             log.exception("Error en el ciclo del heartbeat")
         await asyncio.sleep(intervalo_s)

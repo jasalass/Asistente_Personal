@@ -1,8 +1,10 @@
 import json
 
+import pytest
 from pydantic import BaseModel
 
 from asistente.agent.loop import MSG_SIN_RESPUESTA, ejecutar_agente
+from asistente.llm.base import LLMNoDisponible, LLMRespuesta, ToolCall
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
 from tests.fakes import FakeAuditoria, FakeLLM, llamada, texto
 
@@ -112,3 +114,58 @@ def test_historial_se_incluye_entre_system_y_mensaje():
     correr(llm, historial=[{"role": "user", "content": "antes"}])
     roles = [m["content"] for m in llm.llamadas[0]]
     assert roles == ["sp", "antes", "hola"]
+
+
+# ---------- si el modelo cae DESPUÉS de haber hecho cambios, se cuentan en vez de "no puedo pensar" ----------
+
+
+def registro_con_escritura(hechas: list) -> ToolRegistry:
+    reg = ToolRegistry()
+
+    def crear_cosa(nombre):
+        hechas.append(nombre)
+        return {"resumen": f"Cosa creada: {nombre}", "nombre": nombre}
+
+    class Args(BaseModel):
+        nombre: str
+
+    reg.register(ToolSpec("crear_cosa", Level.AUTO, "crea", crear_cosa, Args))
+    reg.register(ToolSpec("listar_cosas", Level.AUTO, "lista", list))
+    reg.register(ToolSpec("falla", Level.AUTO, "falla", lambda: (_ for _ in ()).throw(ToolError("no existe"))))
+    return reg
+
+
+def dos_llamadas_en_paralelo(*args_json):
+    calls = [ToolCall(f"c{i}", "crear_cosa", a) for i, a in enumerate(args_json)]
+    return LLMRespuesta(contenido=None, tool_calls=calls, tokens_in=10, tokens_out=5)
+
+
+def test_si_cae_el_modelo_tras_hacer_cambios_se_cuentan_los_cambios():
+    hechas = []
+    llm = FakeLLM(
+        dos_llamadas_en_paralelo('{"nombre": "Fullstack"}', '{"nombre": "Cloud Native"}'),
+        LLMNoDisponible("límite por minuto"),
+    )
+    res, _ = correr(llm, registro_con_escritura(hechas))
+    assert hechas == ["Fullstack", "Cloud Native"]  # los cambios sí quedaron hechos
+    assert res.parcial is True
+    assert res.respuesta.startswith("Alcancé a hacer esto, pero no pude redactar la respuesta")
+    assert "• Cosa creada: Fullstack" in res.respuesta and "• Cosa creada: Cloud Native" in res.respuesta
+    assert "no puedo pensar" not in res.respuesta.lower()
+
+
+def test_si_solo_se_consulto_y_cae_el_modelo_se_propaga_el_error_habitual():
+    llm = FakeLLM(llamada("listar_cosas", {}), LLMNoDisponible("sin cupo"))
+    with pytest.raises(LLMNoDisponible):
+        correr(llm, registro_con_escritura([]))
+
+
+def test_una_herramienta_que_fallo_no_cuenta_como_algo_hecho():
+    llm = FakeLLM(llamada("falla", {}), LLMNoDisponible("sin cupo"))
+    with pytest.raises(LLMNoDisponible):
+        correr(llm, registro_con_escritura([]))
+
+
+def test_sin_llamadas_previas_el_error_del_modelo_se_propaga():
+    with pytest.raises(LLMNoDisponible):
+        correr(FakeLLM(LLMNoDisponible("sin cupo")), registro_con_escritura([]))

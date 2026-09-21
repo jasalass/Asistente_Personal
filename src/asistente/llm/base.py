@@ -3,7 +3,15 @@ from typing import Any, Protocol
 
 
 class LLMNoDisponible(Exception):
-    """El proveedor no respondió (límite de uso agotado, caída, etc.)."""
+    """El proveedor no respondió (límite de uso agotado, caída, etc.).
+
+    `espera_s`, si se conoce, es cuánto pidió esperar el proveedor: sirve para decirle al usuario
+    cuándo reintentar en vez de un genérico "no puedo pensar".
+    """
+
+    def __init__(self, mensaje: str = "", espera_s: float | None = None) -> None:
+        super().__init__(mensaje)
+        self.espera_s = espera_s
 
 
 class ToolCallRechazado(Exception):

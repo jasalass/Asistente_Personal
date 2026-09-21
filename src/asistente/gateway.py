@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 
 def construir_bot(
-    cfg: Settings, *, vigilar_bloqueo: Callable[[], bool] | None = None
+    cfg: Settings, *, vigilar_bloqueo: Callable[[], bool | None] | None = None
 ) -> AsistenteBot:
     tz = ZoneInfo(cfg.timezone)
     clave_groq = cfg.groq_api_key.get_secret_value()
@@ -175,7 +175,7 @@ def main() -> None:
     bloqueo = BloqueoInstancia(cfg.database_url.get_secret_value())
     bloqueo.esperar()
     try:
-        bot = construir_bot(cfg, vigilar_bloqueo=bloqueo.vigente)
+        bot = construir_bot(cfg, vigilar_bloqueo=bloqueo.conservar)
         ejecutar(bot, cfg.discord_token.get_secret_value(), al_iniciar=verificar_base)
         if bot.bloqueo_perdido:
             raise SystemExit(1)  # salida con error para que el supervisor lo reinicie

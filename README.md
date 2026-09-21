@@ -194,6 +194,17 @@ ordenados por hora y con los feriados marcados.
   hay, aunque sea feriado"). También vigencia opcional (inicio y fin de semestre).
 - **Avisos** (heartbeat, sin gastar tokens): 60 minutos antes de cada evento (configurable, o ninguno),
   a su hora aunque sea de madrugada, y por la mañana te cuenta si algo de hoy queda suspendido.
+- **"Qué tengo hoy / mañana / esta semana" se responde sin el modelo.** Frases como *"qué tengo
+  mañana"*, *"y hoy?"*, *"qué tengo el martes"* o *"qué tengo los próximos 5 días"* las resuelve el
+  código: es instantáneo, gasta **0 tokens** y muestra los datos **tal como están guardados** (el modelo
+  llegó a escribir "Caturrufo" donde decía "CUTURRUFO" y a omitir apellidos). Solo se reconocen frases
+  completas y conocidas; cualquier orden ("borra lo de hoy", "recuérdame mañana…") va al modelo.
+- **Nombres cortos y legibles, siempre:** al crear o renombrar un evento el sistema normaliza el
+  nombre, lo pida o no el modelo. Si trae un código de asignatura (`DSY1104`), descarta lo anterior (el
+  nombre de la carrera), pasa las MAYÚSCULAS a formato título respetando códigos, números romanos y
+  palabras cortas, y rechaza nombres de más de 60 caracteres pidiendo uno corto (el profesor, la sala y
+  la sede van en la descripción). Ej.: `INGENIERÍA EN INFORMÁTICA (DESARROLLO DE SOFTWARE) DSY1104
+  DESARROLLO FULLSTACK II` → `DSY1104 Desarrollo Fullstack II`.
 - Límites: los feriados son los legales; no incluyen decretos de última hora ni los recesos de tu
   universidad o trabajo, para eso están las excepciones. Los eventos se pausan (`activo: false`), no se borran.
 
@@ -206,6 +217,15 @@ proceso pierde el bloqueo (corte de la conexión a la base), se detiene con erro
 lo reinicie: es preferible caer a responder por duplicado.
 
 - Requiere una conexión de **sesión** a la base (el Session pooler de Supabase lo es).
+- **Los cortes de red no lo apagan.** El vigilante distingue tres casos: el bloqueo sigue siendo nuestro
+  (o se recupera tras una caída de la conexión), **otra instancia lo tomó** (entonces sí se detiene) o
+  **no se puede saber** porque no hay red (se sigue esperando y se revisa cada 10 s hasta decidir).
+  Al arrancar sin internet también espera en vez de morir. Con el wifi caído, el heartbeat y el vigía
+  dejan una línea de aviso (sin tracebacks) y reintentan, y un mensaje tuyo recibe "no tengo conexión
+  con mi base de datos, reintenta en un minuto".
+- **Supervisor para tu PC:** `.\scripts\ejecutar_asistente.ps1` ejecuta el asistente y lo reinicia si
+  termina con error (espera creciente de 15 s hasta 5 min). Un apagado normal no se reinicia. En la
+  nube esa función la cumple el orquestador (por ejemplo, un servicio de ECS).
 - Al arrancar y al apagarse con normalidad, el bot publica un aviso en `#avisos` con el nombre del
   equipo (`Asistente en línea en <equipo>`). Una caída brusca no puede avisar; se nota porque el aviso
   de arranque aparece de nuevo cuando el supervisor lo reinicia.
@@ -219,6 +239,11 @@ los tuyos en `console.groq.com/settings/limits`). Un mensaje de chat gasta unos 
 (2 o 3 llamadas al modelo, ~2.900 tokens fijos cada una), así que el agente en `gpt-oss-120b` alcanza
 para unas 25 a 35 conversaciones al día.
 
+- **Tope de espera por mensaje (45 s):** ante un límite por minuto de Groq el bot espera y reintenta,
+  pero nunca más de 45 s en total; pasado eso responde *"estoy al límite de uso, reintenta en unos N
+  segundos"* en vez de dejarte esperando. Si el modelo cae **después** de haber hecho cambios, te cuenta
+  lo que alcanzó a hacer (no un genérico "no puedo pensar"). El límite es de 8.000 tokens por minuto:
+  cada mensaje al modelo gasta ~7.000, así que conviene espaciar los mensajes largos.
 - `/uso` muestra lo consumido hoy según los registros del asistente (chat y vigía, por separado).
 - **Respaldo entre modelos:** si el principal agota su cupo (`MODELO_AGENTE`), el chat pasa solo al
   `MODELO_RESPALDO` (por defecto `gpt-oss-20b`, otro cupo de 200K) y avisa en el mensaje que respondió

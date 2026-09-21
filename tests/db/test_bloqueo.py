@@ -1,3 +1,4 @@
+import psycopg
 import pytest
 from pydantic import ValidationError
 
@@ -90,6 +91,87 @@ def test_esperar_con_limite_falla_si_el_otro_no_lo_suelta(bloqueos):
     with pytest.raises(TimeoutError):
         espera.esperar(intentos=3, dormir=lambda s: None)
     assert titular.vigente()  # el titular no se vio afectado
+
+
+# ---------- conservar(): un corte de red no es lo mismo que perder el bloqueo ----------
+
+
+def test_conservar_es_true_mientras_el_bloqueo_sea_nuestro(bloqueos):
+    b = bloqueos()
+    assert b.intentar()
+    assert b.conservar() is True
+
+
+def test_tras_un_corte_de_conexion_se_recupera_el_bloqueo_si_nadie_lo_tomo(bloqueos, caplog):
+    b = bloqueos()
+    assert b.intentar()
+    b._conn.close()  # el wifi se cayó: la conexión a la base murió y Postgres soltó el bloqueo
+    assert b.vigente() is False
+    with caplog.at_level("INFO", logger="asistente.bloqueo"):
+        assert b.conservar() is True  # nadie más lo tomó: se vuelve a tomar
+    assert b.vigente() is True
+    assert "se recuperó el bloqueo" in caplog.text  # queda rastro en el log
+
+
+def test_si_durante_el_corte_otra_instancia_lo_tomo_hay_que_detenerse(bloqueos):
+    b, otra = bloqueos(), bloqueos()
+    assert b.intentar()
+    b._conn.close()
+    assert otra.intentar()  # mientras tanto, otra instancia (p. ej. en la nube) se hizo cargo
+    assert b.conservar() is False  # aquí SÍ hay que apagarse para no duplicar
+    assert otra.vigente() is True
+
+
+def test_sin_red_no_se_puede_saber_y_no_se_lanza_excepcion(bloqueos, monkeypatch):
+    b = bloqueos()
+    assert b.intentar()
+    b._conn.close()
+
+    def sin_red(*args, **kwargs):
+        raise psycopg.OperationalError("could not translate host name")
+
+    monkeypatch.setattr(psycopg, "connect", sin_red)
+    assert b.conservar() is None  # ni True ni False: se sigue esperando
+    assert b._conn is None
+
+
+def test_al_volver_la_red_la_misma_comprobacion_decide(bloqueos, monkeypatch):
+    b = bloqueos()
+    assert b.intentar()
+    b._conn.close()
+    conectar = psycopg.connect
+    monkeypatch.setattr(psycopg, "connect", lambda *a, **k: (_ for _ in ()).throw(psycopg.OperationalError("sin red")))
+    assert b.conservar() is None
+    monkeypatch.setattr(psycopg, "connect", conectar)  # vuelve internet
+    assert b.conservar() is True
+
+
+def test_esperar_tolera_arrancar_sin_conexion(bloqueos, monkeypatch):
+    b = bloqueos()
+    intentos = []
+    original = b.intentar
+
+    def intentar_con_fallas():
+        intentos.append(1)
+        if len(intentos) <= 2:
+            raise psycopg.OperationalError("sin red")
+        return original()
+
+    monkeypatch.setattr(b, "intentar", intentar_con_fallas)
+    dormidas = []
+    b.esperar(espera_s=3, dormir=dormidas.append)  # antes esto lanzaba la excepción y el proceso moría
+    assert dormidas == [3, 3] and b.vigente()
+
+
+def test_esperar_con_limite_y_sin_red_falla_con_un_motivo_claro(bloqueos, monkeypatch):
+    b = bloqueos()
+
+    def sin_red():
+        raise psycopg.OperationalError("sin red")
+
+    monkeypatch.setattr(b, "intentar", sin_red)
+    with pytest.raises(TimeoutError, match="Sin conexión a la base"):
+        b.esperar(intentos=2, dormir=lambda s: None)
 
 
 def test_esperar_sin_competencia_no_espera(bloqueos):

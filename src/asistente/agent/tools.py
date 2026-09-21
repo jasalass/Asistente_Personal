@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from asistente.agenda.consulta import consultar, formatear
 from asistente.agenda.feriados import CalendarioFeriados, Feriados
+from asistente.agenda.nombres import validar_nombre
 from asistente.agenda.ocurrencias import (
     DIAS,
     advertencia_de_vigencia,
@@ -196,7 +197,11 @@ class CancelarRecordatorioArgs(_SinNulos):
 
 
 class CrearEventoArgs(_SinNulos):
-    nombre: str = Field(min_length=1, max_length=120)
+    nombre: str = Field(
+        min_length=1,
+        max_length=120,
+        description="Nombre corto (máx. 60), ej. 'DSY1104 Desarrollo Fullstack II'. Profesor y sala van en descripcion",
+    )
     dias: list[str] = Field(min_length=1, description="lunes, martes, miércoles... (uno o varios)")
     hora: HoraLocal
     duracion_min: int | None = Field(default=None, ge=1, le=1440)
@@ -418,7 +423,9 @@ def construir_registro(
             o for o in proximas(e, inicio_dia, excepciones, feriados, cuantas=5)
             if o.inicio(tz) > ahora_local
         ][:4]
-        resultado = e.model_dump(mode="json")
+        # Compacto: cada llamada al modelo reenvía estos resultados, y con 4 eventos seguidos el
+        # exceso de campos (fechas de creación, nulos) ayudó a pasar el límite por minuto.
+        resultado = e.model_dump(mode="json", exclude_none=True, exclude={"creado_en", "actualizado_en"})
         resultado["resumen"] = describir(e)  # lo que quedó guardado, redactado por el código
         if aviso := advertencia_de_vigencia(e, inicio_dia):
             resultado["advertencia"] = aviso
@@ -461,9 +468,15 @@ def construir_registro(
                 "La agenda de eventos aún no está disponible: falta aplicar la migración 0004_agenda.sql."
             )
 
+    def nombre_valido(nombre: str) -> str:
+        try:
+            return validar_nombre(nombre)
+        except ValueError as e:
+            raise ToolError(str(e)) from None
+
     def crear_evento(**campos):
         exigir_agenda()
-        nombre = campos["nombre"]
+        nombre = nombre_valido(campos["nombre"])  # corto y legible, lo pida o no el modelo
         for e in eventos.buscar_por_nombre(nombre, limite=8):
             if e.nombre.casefold() == nombre.casefold():
                 estado = "activo" if e.activo else "pausado"
@@ -489,6 +502,8 @@ def construir_registro(
         ev = resolver_evento(id, evento)
         omitir, mantener = campos.pop("omitir_fecha", None), campos.pop("mantener_fecha", None)
         motivo = campos.pop("motivo", None)
+        if "nombre" in campos:
+            campos["nombre"] = nombre_valido(campos["nombre"])
         if omitir is not None and omitir == mantener:
             raise ToolError("La misma fecha no puede omitirse y mantenerse a la vez.")
         if "dias" in campos:

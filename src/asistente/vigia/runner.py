@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import psycopg
+
 from asistente.db.connection import Conn, transaccion
 from asistente.db.models import Tema
 from asistente.db.repos.auditoria import AuditoriaRepo
@@ -209,6 +211,8 @@ async def vigia(
                 ahora=datetime.now(tz),
                 max_busquedas_dia=max_busquedas_dia,
             )
+        except psycopg.OperationalError:
+            log.warning("Vigía sin conexión a la base de datos: se reintenta en el próximo ciclo")
         except Exception:
             log.exception("Error en el ciclo del vigía")
         await asyncio.sleep(intervalo_s)

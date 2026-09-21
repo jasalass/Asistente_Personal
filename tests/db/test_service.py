@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 from asistente.agent.service import MSG_LLM_CAIDO, MSG_PAUSADO, responder
 from asistente.db.repos.procesos import ProcesoRepo
+from asistente.db.repos.recordatorios import RecordatorioRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
 from asistente.llm.base import LLMNoDisponible, LLMRespuesta
 from tests.fakes import FakeLLM, llamada, texto
@@ -63,6 +64,67 @@ def test_en_pausa_no_llama_al_llm(conn):
     llm = FakeLLM(texto("no debería usarse"))
     res = responder(conn, "hola", llm=llm, tz=TZ, ahora=AHORA)
     assert res.respuesta == MSG_PAUSADO and llm.llamadas == []
+
+
+def test_si_cae_el_modelo_tras_hacer_cambios_se_conservan_y_se_cuentan(conn):
+    # Caso real: el asistente creó 4 eventos y luego falló al redactar la respuesta. El usuario
+    # recibió "no puedo pensar" aunque el trabajo estaba hecho.
+    llm = FakeLLM(
+        llamada("crear_recordatorio", {"texto": "llamar al banco", "fecha": "2026-09-22T09:00:00"}),
+        LLMNoDisponible("límite por minuto"),
+    )
+    res = responder(conn, "recuérdame llamar al banco mañana a las 9", llm=llm, tz=TZ, ahora=AHORA)
+    assert res.parcial and res.respuesta.startswith("Alcancé a hacer esto")
+    assert "llamar al banco" in res.respuesta
+    assert "llamar al banco" in [r.texto for r in RecordatorioRepo(conn).buscar_por_texto("banco")]
+    ejec = conn.execute("select error from ejecuciones where tipo = 'mensaje' order by id desc limit 1").fetchone()
+    assert ejec["error"] == "respuesta parcial: el modelo no estuvo disponible"
+
+
+def test_si_el_limite_pide_esperar_se_le_dice_al_usuario_cuanto(conn):
+    class LimitePorMinuto:
+        def chat(self, messages, tools=None, *, json=False):
+            raise LLMNoDisponible("Límite por minuto alcanzado", espera_s=31.2)
+
+    res = responder(conn, "anota que me gusta el té", llm=LimitePorMinuto(), tz=TZ, ahora=AHORA)
+    assert res.respuesta == "Estoy al límite de uso del modelo (Groq). Reintenta en unos 32 segundos."
+
+
+# ---------- consultas de agenda: se responden sin el modelo ----------
+
+
+def test_que_tengo_manana_se_responde_sin_llamar_al_modelo_y_con_los_datos_exactos(conn_agenda):
+    from datetime import time
+
+    from asistente.db.models import EventoNuevo
+    from asistente.db.repos.agenda import EventoRepo
+
+    EventoRepo(conn_agenda).crear(EventoNuevo(
+        nombre="DSY1107 Desarrollo Cloud Native I", dias_semana=[2], hora=time(15, 31), duracion_min=79,
+        descripcion="Profesor: IGNACIO ANDRES CUTURRUFO GONZALEZ, Sala TP2 LABORATORIO DE HARDWARE (30)",
+    ))
+    llm = FakeLLM(texto("NO debería usarse"))
+    res = responder(conn_agenda, "que tengo mañana?", llm=llm, tz=TZ, ahora=AHORA)  # AHORA es lunes
+    assert llm.llamadas == []  # cero tokens y sin esperar el límite por minuto
+    assert res.pasos == 0 and res.tokens_in == 0
+    assert res.respuesta.startswith("**Mañana, martes 22/09**")
+    assert "CUTURRUFO GONZALEZ" in res.respuesta  # el modelo lo había escrito "Caturrufo"
+    ejec = conn_agenda.execute(
+        "select tokens_in, detalle from ejecuciones where tipo = 'mensaje' order by id desc limit 1"
+    ).fetchone()
+    assert ejec["tokens_in"] == 0 and ejec["detalle"] == {"atajo": "agenda", "consulta": "mañana"}
+
+
+def test_una_orden_que_menciona_el_dia_no_es_un_atajo_y_va_al_modelo(conn):
+    llm = FakeLLM(texto("Listo, lo anoté."))
+    res = responder(conn, "borra lo de hoy", llm=llm, tz=TZ, ahora=AHORA)
+    assert len(llm.llamadas) == 1 and res.respuesta == "Listo, lo anoté."
+
+
+def test_en_pausa_tampoco_responde_las_consultas_de_agenda(conn):
+    EstadoSistemaRepo(conn).set_pausado(True)
+    res = responder(conn, "que tengo hoy?", llm=FakeLLM(), tz=TZ, ahora=AHORA)
+    assert res.respuesta == MSG_PAUSADO
 
 
 def test_llm_caido_responde_con_gracia_y_lo_registra(conn):

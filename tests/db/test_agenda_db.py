@@ -161,6 +161,54 @@ def test_todos_los_lunes_crea_un_evento_semanal_con_sus_proximas_fechas(reg):
     assert proximas[3].startswith("lunes 12/10 20:30 SUSPENDIDA (feriado: ")
 
 
+CARRERA = "INGENIERÍA EN INFORMÁTICA (DESARROLLO DE SOFTWARE)"
+
+
+def test_el_sistema_acorta_el_nombre_al_crear_aunque_el_modelo_no_lo_haga(reg):
+    e = reg.invoke(
+        "crear_evento",
+        {"nombre": f"{CARRERA} TST1104 DESARROLLO FULLSTACK II", "dias": ["martes"], "hora": "08:01",
+         "descripcion": "Profesor: JESUS ALBERTO VARGAS FUENZALIDA, Sala LC5"},
+    )
+    assert e["nombre"] == "TST1104 Desarrollo Fullstack II"
+    assert e["resumen"].startswith("TST1104 Desarrollo Fullstack II: los martes a las 08:01")
+    assert "INGENIERÍA" not in e["resumen"]
+
+
+def test_el_duplicado_se_detecta_con_el_nombre_normalizado(reg):
+    reg.invoke("crear_evento", {"nombre": "TST1104 Desarrollo Fullstack II", "dias": ["martes"], "hora": "08:01"})
+    with pytest.raises(ToolError, match="Ya existe el evento"):
+        reg.invoke("crear_evento", {"nombre": f"{CARRERA} TST1104 DESARROLLO FULLSTACK II",
+                                    "dias": ["jueves"], "hora": "08:01"})
+
+
+def test_un_nombre_demasiado_largo_se_rechaza_para_que_el_modelo_lo_corrija(reg):
+    largo = "Reunión semanal de coordinación con todos los equipos de producto y de ingeniería"
+    with pytest.raises(ToolError, match="demasiado largo"):
+        reg.invoke("crear_evento", {"nombre": largo, "dias": ["lunes"], "hora": "10:00"})
+
+
+def test_al_renombrar_tambien_se_normaliza(reg):
+    reg.invoke("crear_evento", {"nombre": "Clase", "dias": ["martes"], "hora": "08:01"})
+    e = reg.invoke("actualizar_evento", {"evento": "clase", "nombre": f"{CARRERA} TST3100 INGLÉS ELEMENTAL I"})
+    assert e["nombre"] == "TST3100 Inglés Elemental I"
+
+
+def test_el_esquema_le_pide_al_modelo_un_nombre_corto(reg):
+    esquema = reg.definiciones()
+    crear = next(d for d in esquema if d["function"]["name"] == "crear_evento")
+    assert "corto" in crear["function"]["parameters"]["properties"]["nombre"]["description"]
+
+
+def test_el_resultado_es_compacto_sin_fechas_de_creacion_ni_nulos(reg):
+    # Cada llamada al modelo reenvía los resultados: con varios eventos seguidos, los campos
+    # sobrantes contribuyeron a pasar el límite por minuto.
+    e = reg.invoke("crear_evento", {"nombre": "Clase", "dias": ["martes"], "hora": "08:01"})
+    assert "creado_en" not in e and "actualizado_en" not in e
+    assert "descripcion" not in e and "duracion_min" not in e  # nulos: no se envían
+    assert e["resumen"] and e["proximas"]
+
+
 def test_la_herramienta_devuelve_la_confirmacion_redactada_por_el_codigo(reg):
     e = reg.invoke("crear_evento", {"nombre": "Clases de Matemática", "dias": ["lunes"], "hora": "20:30"})
     assert e["resumen"] == (

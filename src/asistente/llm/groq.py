@@ -4,12 +4,16 @@ from typing import Any
 import groq
 
 from asistente.llm.base import LLMNoDisponible, LLMRespuesta, ToolCall, ToolCallRechazado
+from asistente.llm.presupuesto import restante
 
 _RECHAZOS_CORREGIBLES = ("tool_use_failed", "json_validate_failed")
 _REINTENTOS = 2
-# Esperar sirve para el límite por minuto (segundos). Si Groq pide esperar más, es el cupo diario
-# agotado: dormir no ayuda, y es mejor fallar de inmediato para que otro modelo tome el mensaje.
-_ESPERA_MAX_S = 30.0
+# Esperar sirve para el límite por minuto: la ventana de 60 s puede pedir hasta ~1 minuto. El cupo
+# DIARIO, en cambio, no se arregla durmiendo: se reconoce por el propio mensaje de Groq ("per day",
+# TPD/RPD) o, si no lo trae, por una espera muy larga. Antes se confundía una espera de 42 s del
+# límite por minuto con cupo diario agotado, y no se esperaba aunque bastaba un minuto.
+_ESPERA_MAX_S = 75.0
+_ESPERA_LARGA_S = 120.0
 
 
 class GroqLLM:
@@ -50,12 +54,16 @@ class GroqLLM:
                 raise ToolCallRechazado(str(cuerpo.get("message", "esquema inválido"))[:300]) from None
             except groq.RateLimitError as e:
                 espera = _espera(e)
-                if espera > _ESPERA_MAX_S:
+                if _es_limite_diario(e, espera):
                     raise LLMNoDisponible(
-                        f"Cupo de {self._modelo} agotado (Groq pide esperar {int(espera)} s)"
+                        f"Cupo diario de {self._modelo} agotado (Groq pide esperar {int(espera)} s)"
                     ) from None
-                if intento == _REINTENTOS:
-                    raise LLMNoDisponible(f"Límite de uso de {self._modelo} alcanzado") from None
+                quedan = restante()
+                sin_presupuesto = quedan is not None and espera > quedan
+                if espera > _ESPERA_MAX_S or intento == _REINTENTOS or sin_presupuesto:
+                    raise LLMNoDisponible(
+                        f"Límite por minuto de {self._modelo} alcanzado", espera_s=espera
+                    ) from None
                 time.sleep(espera)
             except (groq.APIConnectionError, groq.InternalServerError):
                 if intento == _REINTENTOS:
@@ -73,6 +81,15 @@ class GroqLLM:
             tokens_out=r.usage.completion_tokens if r.usage else 0,
             modelo=self._modelo,
         )
+
+
+def _es_limite_diario(e: groq.RateLimitError, espera: float) -> bool:
+    texto = f"{getattr(e, 'message', '')} {e}".lower()
+    if "per day" in texto or "(tpd)" in texto or "(rpd)" in texto:
+        return True
+    if "per minute" in texto or "(tpm)" in texto or "(rpm)" in texto:
+        return False
+    return espera > _ESPERA_LARGA_S  # sin pistas en el mensaje: una espera larguísima sugiere cupo diario
 
 
 def _espera(e: groq.RateLimitError) -> float:
