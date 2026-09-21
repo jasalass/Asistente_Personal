@@ -2,14 +2,20 @@ from functools import lru_cache
 from typing import Annotated
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Configuración desde variables de entorno. Falla al arrancar si falta un secreto."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Una variable vacía cuenta como no definida: las opcionales quedan en None y las
+    # obligatorias fallan con "campo requerido" en vez de un error de conversión confuso.
+    # hide_input_in_errors: sin esto, un error de validación imprime el diccionario de entrada
+    # (con el inicio de las claves) en tracebacks y logs.
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", env_ignore_empty=True, hide_input_in_errors=True
+    )
 
     groq_api_key: SecretStr
     tavily_api_key: SecretStr
@@ -19,6 +25,12 @@ class Settings(BaseSettings):
     discord_owner_id: int
     discord_guild_id: int
     discord_channel_ids: Annotated[frozenset[int], NoDecode]
+
+    # Canal donde el heartbeat publica avisos. Sin él, el heartbeat queda desactivado.
+    discord_canal_avisos_id: int | None = None
+    heartbeat_intervalo_s: int = Field(default=60, ge=30)
+    aviso_hora_inicio: int = Field(default=8, ge=0, le=23)  # horario diurno, hora local
+    aviso_hora_fin: int = Field(default=21, ge=1, le=24)
 
     timezone: str = "America/Santiago"
 
@@ -39,6 +51,15 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return frozenset(int(x) for x in v.split(",") if x.strip())
         return v
+
+    @model_validator(mode="after")
+    def _canal_de_avisos_permitido(self) -> "Settings":
+        canal = self.discord_canal_avisos_id
+        if canal is not None and canal not in self.discord_channel_ids:
+            raise ValueError("DISCORD_CANAL_AVISOS_ID debe estar en DISCORD_CHANNEL_IDS")
+        if self.aviso_hora_inicio >= self.aviso_hora_fin:
+            raise ValueError("AVISO_HORA_INICIO debe ser menor que AVISO_HORA_FIN")
+        return self
 
     @field_validator("timezone")
     @classmethod

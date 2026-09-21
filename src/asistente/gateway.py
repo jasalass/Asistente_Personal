@@ -13,8 +13,11 @@ from asistente.config import Settings, get_settings
 from asistente.db.connection import transaccion
 from asistente.discord_bot.bot import AsistenteBot, ejecutar
 from asistente.discord_bot.despachador import Despachador
+from asistente.heartbeat.runner import latido
 from asistente.llm.groq import GroqLLM
 from asistente.security.allowlist import Allowlist
+
+log = logging.getLogger(__name__)
 
 
 def construir_bot(cfg: Settings) -> AsistenteBot:
@@ -36,7 +39,27 @@ def construir_bot(cfg: Settings) -> AsistenteBot:
         guild_id=cfg.discord_guild_id,
         channel_ids=cfg.discord_channel_ids,
     )
-    return AsistenteBot(allowlist, Despachador(allowlist, responder_async))
+
+    latido_fn = None
+    if cfg.discord_canal_avisos_id is None:
+        log.warning("DISCORD_CANAL_AVISOS_ID no está definido: el heartbeat queda desactivado")
+    else:
+
+        def latido_fn(enviar):
+            return latido(
+                enviar,
+                tz=tz,
+                intervalo_s=cfg.heartbeat_intervalo_s,
+                hora_inicio=cfg.aviso_hora_inicio,
+                hora_fin=cfg.aviso_hora_fin,
+            )
+
+    return AsistenteBot(
+        allowlist,
+        Despachador(allowlist, responder_async),
+        latido=latido_fn,
+        canal_avisos_id=cfg.discord_canal_avisos_id,
+    )
 
 
 def verificar_base() -> None:

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 import discord
 from discord import app_commands
@@ -47,13 +47,46 @@ def crear_intents() -> discord.Intents:
     return intents
 
 
+Enviar = Callable[[str], Awaitable[None]]
+Latido = Callable[[Enviar], Awaitable[None]]
+
+
 class AsistenteBot(discord.Client):
-    def __init__(self, allowlist: Allowlist, despachador: Despachador) -> None:
+    def __init__(
+        self,
+        allowlist: Allowlist,
+        despachador: Despachador,
+        *,
+        latido: Latido | None = None,
+        canal_avisos_id: int | None = None,
+    ) -> None:
         super().__init__(intents=crear_intents(), allowed_mentions=SIN_MENCIONES)
         self._despachador = despachador
         self._guild = discord.Object(id=allowlist.guild_id)
+        self._latido = latido
+        self._canal_avisos_id = canal_avisos_id
+        self._tarea_latido: asyncio.Task[None] | None = None
         self.tree = _Arbol(self, allowlist)
         self._registrar_comandos()
+
+    async def enviar_aviso(self, texto: str) -> None:
+        """Publica en el canal de avisos, sin menciones y respetando el límite de Discord."""
+        if self._canal_avisos_id is None:
+            raise RuntimeError("No hay canal de avisos configurado")
+        canal = self.get_channel(self._canal_avisos_id) or await self.fetch_channel(
+            self._canal_avisos_id
+        )
+        for trozo in dividir_mensaje(texto):
+            await canal.send(trozo)
+
+    async def _correr_latido(self) -> None:
+        await self.wait_until_ready()
+        await self._latido(self.enviar_aviso)
+
+    async def close(self) -> None:
+        if self._tarea_latido:
+            self._tarea_latido.cancel()
+        await super().close()
 
     def _registrar_comandos(self) -> None:
         @self.tree.command(name="pausa", description="Pausa al asistente", guild=self._guild)
@@ -81,6 +114,8 @@ class AsistenteBot(discord.Client):
 
     async def setup_hook(self) -> None:
         await self.tree.sync(guild=self._guild)
+        if self._latido is not None:
+            self._tarea_latido = asyncio.create_task(self._correr_latido())
 
     async def on_ready(self) -> None:
         log.info("Conectado como %s", self.user)

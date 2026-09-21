@@ -107,7 +107,12 @@ def construir_registro(conn: Conn, tz: ZoneInfo) -> ToolRegistry:
     procesos, memorias, recordatorios = ProcesoRepo(conn), MemoriaRepo(conn), RecordatorioRepo(conn)
 
     def con_zona(dt: datetime | None) -> datetime | None:
-        return dt.replace(tzinfo=tz) if dt is not None and dt.tzinfo is None else dt
+        """Toma la hora tal como se dijo, en la zona del usuario, y descarta cualquier desfase.
+
+        Los modelos suelen agregar el desfase estándar de Chile (-04:00) aunque en verano sea
+        -03:00, lo que corría todas las fechas una hora. El desfase que traiga no es confiable.
+        """
+        return dt.replace(tzinfo=tz) if dt is not None else None
 
     def proceso_o_error(pid: UUID):
         p = procesos.obtener(pid)

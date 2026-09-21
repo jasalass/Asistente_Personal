@@ -103,7 +103,7 @@ def test_buscar_por_nombre_escapa_comodines(repo):
 
 
 def test_pendientes_de_chequeo(repo):
-    ahora = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+    ahora = datetime.now(UTC)  # el proceso nunca chequeado cuenta desde su creación (ahora)
     semanal = repo.crear(ProcesoNuevo(nombre="semanal", frecuencia_chequeo_dias=7))
     sin_freq = repo.crear(ProcesoNuevo(nombre="sin frecuencia"))
     cerrado = repo.crear(
@@ -112,13 +112,16 @@ def test_pendientes_de_chequeo(repo):
         )
     )
 
-    ids = {p.id for p in repo.pendientes_de_chequeo(ahora)}
-    assert semanal.id in ids  # nunca chequeado
-    assert sin_freq.id not in ids and cerrado.id not in ids
+    assert semanal.id not in {p.id for p in repo.pendientes_de_chequeo(ahora)}  # recién creado
+    en_8_dias = {p.id for p in repo.pendientes_de_chequeo(ahora + timedelta(days=8))}
+    assert semanal.id in en_8_dias
+    assert sin_freq.id not in en_8_dias and cerrado.id not in en_8_dias
 
-    repo.marcar_chequeado(semanal.id, ahora)
-    assert semanal.id not in {p.id for p in repo.pendientes_de_chequeo(ahora)}
+    repo.marcar_chequeado(semanal.id, ahora + timedelta(days=8))
     assert semanal.id not in {
-        p.id for p in repo.pendientes_de_chequeo(ahora + timedelta(days=6))
+        p.id for p in repo.pendientes_de_chequeo(ahora + timedelta(days=8))
     }
-    assert semanal.id in {p.id for p in repo.pendientes_de_chequeo(ahora + timedelta(days=7))}
+    assert semanal.id not in {
+        p.id for p in repo.pendientes_de_chequeo(ahora + timedelta(days=14))
+    }
+    assert semanal.id in {p.id for p in repo.pendientes_de_chequeo(ahora + timedelta(days=15))}

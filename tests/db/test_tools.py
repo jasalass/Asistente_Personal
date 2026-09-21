@@ -83,6 +83,22 @@ def test_fecha_sin_zona_se_interpreta_en_hora_local(reg):
     assert fecha.astimezone(UTC).hour in (12, 13)  # Chile: UTC-3 o UTC-4 según horario de verano
 
 
+@pytest.mark.parametrize("sufijo", ["-04:00", "-03:00", "Z", "+09:00"])
+def test_el_desfase_que_manda_el_modelo_se_ignora(reg, sufijo):
+    # Regresión: el modelo mandaba -04:00 en verano (Chile -03:00) y la fecha se corría 1 hora.
+    r = reg.invoke("crear_recordatorio", {"texto": "x", "fecha": f"2026-10-15T13:00:00{sufijo}"})
+    assert datetime.fromisoformat(r["fecha"]) == datetime(2026, 10, 15, 13, 0, tzinfo=TZ)
+
+
+def test_el_desfase_tambien_se_ignora_en_los_procesos(reg):
+    p = crear(reg, proxima_accion_fecha="2026-10-15T13:00:00-04:00")
+    assert datetime.fromisoformat(p["proxima_accion_fecha"]) == datetime(2026, 10, 15, 13, 0, tzinfo=TZ)
+    q = reg.invoke(
+        "actualizar_proceso", {"id": p["id"], "proxima_accion_fecha": "2026-10-16T09:30:00-04:00"}
+    )
+    assert datetime.fromisoformat(q["proxima_accion_fecha"]) == datetime(2026, 10, 16, 9, 30, tzinfo=TZ)
+
+
 def test_memoria_se_guarda_como_del_usuario_y_se_busca(reg):
     m = reg.invoke("guardar_memoria", {"contenido": "Prefiere el café sin azúcar", "etiquetas": ["gustos"]})
     assert m["origen"] == "usuario"

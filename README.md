@@ -7,8 +7,8 @@ de un solo usuario, inspirado en la arquitectura de [OpenClaw](https://github.co
 
 > **Estado: en construcción.** Hoy existen la base segura (configuración, permisos, base de datos y
 > repositorios), el **agente** (LLM en Groq + tools de procesos, memorias y recordatorios) y el **bot de
-> Discord** que los conecta. **Todavía no hay heartbeat ni vigía de temas**: el asistente responde
-> cuando le escribes, pero aún no te avisa por su cuenta.
+> Discord** que los conecta, más un **heartbeat** que te avisa por su cuenta. **Todavía no hay vigía de
+> temas** (búsqueda con Tavily).
 
 ## Qué hace (objetivo)
 
@@ -99,7 +99,9 @@ Copia `.env.example` a `.env` y complétalo. **Nunca** lo subas al repositorio (
 | `DISCORD_OWNER_ID` | Tu ID numérico de usuario |
 | `DISCORD_GUILD_ID` | ID numérico de tu servidor |
 | `DISCORD_CHANNEL_IDS` | IDs numéricos de los canales permitidos, separados por coma |
+| `DISCORD_CANAL_AVISOS_ID` | Canal (uno de los anteriores) donde el heartbeat publica avisos. Sin él, no avisa |
 | `TIMEZONE` | Zona horaria IANA (por defecto `America/Santiago`) |
+| `HEARTBEAT_INTERVALO_S`, `AVISO_HORA_INICIO`, `AVISO_HORA_FIN` | Opcionales: cada cuántos segundos late (60), y horario diurno de avisos de procesos (8 a 21) |
 
 Los IDs de Discord se copian con el **Modo desarrollador** activado (Ajustes → Avanzado) y clic
 derecho → *Copiar ID*.
@@ -152,7 +154,24 @@ Escríbele en cualquiera de los canales permitidos. Comandos (solo tú): `/pausa
 - Sus respuestas **no pueden mencionar** a nadie (`@everyone`, roles ni usuarios).
 - Atiende **un mensaje a la vez** y recuerda los últimos 3 intercambios de cada canal, solo en memoria
   (se pierde al reiniciar; lo importante queda en la base a través de las tools).
-- Mientras el proceso esté apagado, no responde: corre en tu PC hasta que lo despleguemos.
+- Mientras el proceso esté apagado, no responde ni avisa: corre en tu PC hasta que lo despleguemos.
+
+### Heartbeat: avisos proactivos
+
+Cada 60 segundos el bot revisa la base y publica en `DISCORD_CANAL_AVISOS_ID`. **No usa el LLM**:
+son consultas SQL y mensajes con plantilla, así que no gasta cuota de Groq ni puede ser manipulado.
+
+| Qué avisa | Cuándo |
+|---|---|
+| Recordatorios | A su hora exacta (también de madrugada). Si llegan tarde, indica para cuándo eran |
+| Próxima acción con fecha de un proceso | 24 h antes, 2 h antes y una vez cuando ya pasó |
+| Fecha límite de un proceso | 3 días antes, 1 día antes, el mismo día y cuando venció |
+| Chequeo periódico | Cada `frecuencia_chequeo_dias` días, para los procesos que la tengan definida |
+
+- Los avisos de procesos solo salen en horario diurno (por defecto 08:00–21:00 hora local).
+- Cada aviso se envía **una sola vez**: queda registrado en `auditoria` y esa misma marca evita
+  repetirlo. Se registra solo si Discord confirmó el envío; si falla, se reintenta al ciclo siguiente.
+- Con `/pausa` no envía nada. Los procesos completados o cancelados no generan avisos.
 
 ## Estructura
 
@@ -172,6 +191,7 @@ Escríbele en cualquiera de los canales permitidos. Comandos (solo tú): `/pausa
 │   ├── llm/                 # interfaz LLM y cliente de Groq (reintentos por límite de uso)
 │   ├── agent/               # tools, bucle de tool calling, prompt y servicio por mensaje
 │   ├── discord_bot/         # bot, despachador con allowlist, historial, comandos de pausa
+│   ├── heartbeat/           # reglas de avisos (SQL + plantillas) y ciclo de envío
 │   ├── gateway.py           # arranque: `python -m asistente`
 │   └── db/                  # conexión, modelos y repositorios
 │       └── repos/           # procesos, memorias, recordatorios, auditoría, kill switch
@@ -186,7 +206,7 @@ Escríbele en cualquiera de los canales permitidos. Comandos (solo tú): `/pausa
 - [x] Capa del LLM (Groq) y tools del agente registradas con su nivel de autoridad
 - [x] Bot de Discord con allowlist, memoria conversacional en RAM y `/pausa` `/reanudar` `/estado`
 - [ ] Persistencia de aprobaciones (`acciones_pendientes`) y botones Aprobar/Rechazar en Discord
-- [ ] Heartbeat: chequeo proactivo de procesos y recordatorios
+- [x] Heartbeat: chequeo proactivo de procesos y recordatorios
 - [ ] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
 - [ ] Google Calendar / Gmail, Microsoft Graph
 - [ ] Acciones acotadas con guardrails (whitelist, modo "propone, no ejecuta", auditoría)

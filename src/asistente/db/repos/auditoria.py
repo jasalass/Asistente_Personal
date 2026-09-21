@@ -20,6 +20,15 @@ class AuditoriaRepo:
             (actor, accion, Jsonb(detalle) if detalle is not None else None),
         )
 
+    def aviso_ya_enviado(self, clave: str) -> bool:
+        """El registro de un aviso enviado es también la marca que evita reenviarlo."""
+        fila = self._conn.execute(
+            "select 1 from auditoria where actor = 'heartbeat' and accion = 'aviso' "
+            "and detalle->>'clave' = %s limit 1",
+            (clave,),
+        ).fetchone()
+        return fila is not None
+
     def registrar_ejecucion(
         self,
         tipo: TipoEjecucion,

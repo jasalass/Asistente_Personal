@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
@@ -123,17 +123,44 @@ class ProcesoRepo:
         return [ProcesoEvento.model_validate(f) for f in filas]
 
     def pendientes_de_chequeo(self, ahora: datetime) -> list[Proceso]:
-        """Procesos vigilables cuyo último chequeo ya venció según su frecuencia."""
+        """Procesos vigilables cuyo último chequeo ya venció según su frecuencia.
+
+        Un proceso nunca chequeado cuenta desde su creación: no se le avisa el mismo día.
+        """
         filas = self._conn.execute(
             """
             select * from procesos
             where frecuencia_chequeo_dias is not null
               and estado = any(%s::proceso_estado[])
-              and (ultimo_chequeo is null
-                   or ultimo_chequeo + make_interval(days => frecuencia_chequeo_dias) <= %s)
-            order by prioridad desc, ultimo_chequeo nulls first
+              and coalesce(ultimo_chequeo, creado_en)
+                  + make_interval(days => frecuencia_chequeo_dias) <= %s
+            order by prioridad desc, coalesce(ultimo_chequeo, creado_en)
             """,
             (list(_ESTADOS_VIGILABLES), ahora),
+        ).fetchall()
+        return [Proceso.model_validate(f) for f in filas]
+
+    def con_proxima_accion_entre(self, desde: datetime, hasta: datetime) -> list[Proceso]:
+        filas = self._conn.execute(
+            """
+            select * from procesos
+            where proxima_accion_fecha between %s and %s
+              and estado not in ('completado', 'cancelado')
+            order by proxima_accion_fecha
+            """,
+            (desde, hasta),
+        ).fetchall()
+        return [Proceso.model_validate(f) for f in filas]
+
+    def con_fecha_limite_entre(self, desde: date, hasta: date) -> list[Proceso]:
+        filas = self._conn.execute(
+            """
+            select * from procesos
+            where fecha_limite between %s and %s
+              and estado not in ('completado', 'cancelado')
+            order by fecha_limite
+            """,
+            (desde, hasta),
         ).fetchall()
         return [Proceso.model_validate(f) for f in filas]
 
