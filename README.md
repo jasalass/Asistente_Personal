@@ -6,9 +6,9 @@ de un solo usuario, inspirado en la arquitectura de [OpenClaw](https://github.co
 (gateway único, heartbeat proactivo, skills en markdown) pero con la seguridad como prioridad.
 
 > **Estado: en construcción.** Hoy existen la base segura (configuración, permisos, base de datos y
-> repositorios) y el **agente** (LLM en Groq + tools de procesos, memorias y recordatorios). **Todavía
-> no hay bot de Discord ni heartbeat**: no hay nada que "arrancar" como servicio aún. Lo que sí puedes
-> correr son las verificaciones (incluida una conversación real con el agente) y los tests.
+> repositorios), el **agente** (LLM en Groq + tools de procesos, memorias y recordatorios) y el **bot de
+> Discord** que los conecta. **Todavía no hay heartbeat ni vigía de temas**: el asistente responde
+> cuando le escribes, pero aún no te avisa por su cuenta.
 
 ## Qué hace (objetivo)
 
@@ -131,6 +131,29 @@ Envía cinco mensajes (crear un proceso, actualizarlo con un recordatorio, lista
 una preferencia y un intento de sacarle las claves) y muestra qué tools usó el agente y qué quedó en
 la base antes de revertir. Sirve para detectar regresiones al cambiar prompts, skills o tools.
 
+### 6. Verificar Discord y arrancar el asistente
+
+En el [portal de desarrolladores](https://discord.com/developers/applications) → tu app → **Bot**:
+activa **Message Content Intent** y desactiva **Public Bot**. Invita el bot con solo los permisos
+*Ver canales*, *Enviar mensajes*, *Insertar enlaces* y *Leer el historial* (nunca Administrador).
+
+```powershell
+# Comprueba token, intent, presencia en tu servidor y permisos por canal (no publica nada)
+$env:PYTHONPATH = "src"; python scripts/check_discord.py
+
+# Arranca el asistente (queda corriendo; Ctrl+C para detenerlo)
+python -m asistente
+```
+
+Escríbele en cualquiera de los canales permitidos. Comandos (solo tú): `/pausa`, `/reanudar`, `/estado`.
+
+- El bot **ignora sin responder** a cualquier otro usuario, servidor, canal o mensaje directo; ni
+  siquiera muestra "escribiendo…".
+- Sus respuestas **no pueden mencionar** a nadie (`@everyone`, roles ni usuarios).
+- Atiende **un mensaje a la vez** y recuerda los últimos 3 intercambios de cada canal, solo en memoria
+  (se pierde al reiniciar; lo importante queda en la base a través de las tools).
+- Mientras el proceso esté apagado, no responde: corre en tu PC hasta que lo despleguemos.
+
 ## Estructura
 
 ```
@@ -141,12 +164,15 @@ la base antes de revertir. Sirve para detectar regresiones al cambiar prompts, s
 │   └── skills/              # instrucciones por dominio (procesos.md)
 ├── scripts/
 │   ├── check_db.py          # verificación de conexión y permisos
-│   └── check_agent.py       # conversación real con Groq + base (se revierte)
+│   ├── check_agent.py       # conversación real con Groq + base (se revierte)
+│   └── check_discord.py     # token, intents y permisos del bot (no publica nada)
 ├── src/asistente/
 │   ├── config.py            # configuración con Pydantic (secretos ocultos)
 │   ├── security/            # allowlist, registro de tools, aprobaciones
 │   ├── llm/                 # interfaz LLM y cliente de Groq (reintentos por límite de uso)
 │   ├── agent/               # tools, bucle de tool calling, prompt y servicio por mensaje
+│   ├── discord_bot/         # bot, despachador con allowlist, historial, comandos de pausa
+│   ├── gateway.py           # arranque: `python -m asistente`
 │   └── db/                  # conexión, modelos y repositorios
 │       └── repos/           # procesos, memorias, recordatorios, auditoría, kill switch
 └── tests/                   # unitarios (LLM simulado) y de integración contra la base
@@ -158,8 +184,8 @@ la base antes de revertir. Sirve para detectar regresiones al cambiar prompts, s
 - [x] Esquema de datos y rol de mínimos privilegios
 - [x] Repositorios de datos (procesos, memorias, recordatorios, auditoría, kill switch)
 - [x] Capa del LLM (Groq) y tools del agente registradas con su nivel de autoridad
-- [ ] Persistencia de aprobaciones (`acciones_pendientes`) y memoria conversacional entre mensajes
-- [ ] Bot de Discord (con allowlist y botones de aprobación)
+- [x] Bot de Discord con allowlist, memoria conversacional en RAM y `/pausa` `/reanudar` `/estado`
+- [ ] Persistencia de aprobaciones (`acciones_pendientes`) y botones Aprobar/Rechazar en Discord
 - [ ] Heartbeat: chequeo proactivo de procesos y recordatorios
 - [ ] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
 - [ ] Google Calendar / Gmail, Microsoft Graph
