@@ -199,6 +199,14 @@ ordenados por hora y con los feriados marcados.
   código: es instantáneo, gasta **0 tokens** y muestra los datos **tal como están guardados** (el modelo
   llegó a escribir "Caturrufo" donde decía "CUTURRUFO" y a omitir apellidos). Solo se reconocen frases
   completas y conocidas; cualquier orden ("borra lo de hoy", "recuérdame mañana…") va al modelo.
+- **Una vez vs. cada semana:** *"el jueves tengo dentista"* crea un evento de una sola fecha
+  (`fecha`); *"todos los jueves"* o un horario fijo de clases crea uno semanal (`dias`). El esquema
+  obliga a elegir uno de los dos, nunca ambos. Para que el modelo no tenga que calcular a qué fecha
+  calendario corresponde "el jueves" (los tres modelos de Groq fallaron esa cuenta en pruebas — uno se
+  fue una semana entera), el prompt ya incluye la fecha exacta de cada día de la próxima semana.
+- **Avisa si algo se cruza:** un recordatorio o evento nuevo que coincide en horario con una clase u
+  otro recordatorio pendiente muestra una advertencia (no bloquea, solo avisa) con qué se cruza y a
+  qué hora.
 - **Nombres cortos y legibles, siempre:** al crear o renombrar un evento el sistema normaliza el
   nombre, lo pida o no el modelo. Si trae un código de asignatura (`DSY1104`), descarta lo anterior (el
   nombre de la carrera), pasa las MAYÚSCULAS a formato título respetando códigos, números romanos y
@@ -245,10 +253,18 @@ para unas 25 a 35 conversaciones al día.
   lo que alcanzó a hacer (no un genérico "no puedo pensar"). El límite es de 8.000 tokens por minuto:
   cada mensaje al modelo gasta ~7.000, así que conviene espaciar los mensajes largos.
 - `/uso` muestra lo consumido hoy según los registros del asistente (chat y vigía, por separado).
-- **Respaldo entre modelos:** si el principal agota su cupo (`MODELO_AGENTE`), el chat pasa solo al
-  `MODELO_RESPALDO` (por defecto `gpt-oss-20b`, otro cupo de 200K) y avisa en el mensaje que respondió
-  el de respaldo, porque es menos fiable. Cuando Groq pide esperar más de 30 s (cupo diario) no se
-  pierde tiempo reintentando. Solo Groq: no se usan otros proveedores.
+- **Cadena de respaldo entre modelos:** si el principal (`MODELO_AGENTE`) agota su cupo, el chat pasa
+  al siguiente de `MODELOS_RESPALDO` (por defecto `gpt-oss-20b`, `qwen/qwen3.8-27b`) — cada modelo
+  gratis de Groq tiene su propio cupo de 200K tokens/día, así que cada uno que se agrega es cupo
+  extra, no solo tolerancia a fallos. Avisa en el mensaje cuando respondió un modelo de respaldo,
+  porque no está tan probado como el principal. Cuando Groq pide esperar más de 30 s (cupo diario) no
+  se pierde tiempo reintentando. Solo Groq: no se usan otros proveedores.
+- **Por qué no hay ruteo por complejidad todavía:** se probaron los tres modelos gratis con el mismo
+  esquema de tools; ninguno acertó siempre (fechas mal calculadas, un nombre de tool equivocado, un
+  campo mal escrito), y el error no fue el mismo modelo dos veces. Sin datos de qué modelo es
+  confiable para qué tipo de pedido, elegir de antemano "el simple va al chico" arriesgaría meter
+  errores silenciosos a propósito. La cadena de respaldo por disponibilidad ya reparte la carga entre
+  los tres; un ruteo más fino espera a tener evals con casos reales.
 - Menos llamadas por mensaje: los procesos y temas se indican por **nombre** (sin buscar antes), las
   tools detectan duplicados por su cuenta y `actualizar_proceso` acepta una `nota` en la misma llamada.
 - El vigía usa el modelo chico y deja registrados sus tokens en cada corrida.

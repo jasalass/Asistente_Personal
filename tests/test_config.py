@@ -19,6 +19,23 @@ def test_canales_desde_string_csv():
     assert s.timezone == "America/Santiago"
 
 
+def test_modelos_respaldo_por_defecto_son_dos():
+    s = Settings(_env_file=None, **BASE, discord_channel_ids="10")
+    assert s.modelos_respaldo == ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+
+
+def test_modelos_respaldo_desde_string_csv_y_en_orden():
+    s = Settings(
+        _env_file=None, **BASE, discord_channel_ids="10", modelos_respaldo="uno, dos ,tres"
+    )
+    assert s.modelos_respaldo == ["uno", "dos", "tres"]
+
+
+def test_modelos_respaldo_vacio_desactiva_el_respaldo():
+    s = Settings(_env_file=None, **BASE, discord_channel_ids="10", modelos_respaldo="")
+    assert s.modelos_respaldo == []
+
+
 def test_secretos_no_se_filtran_en_repr():
     s = Settings(_env_file=None, **BASE, discord_channel_ids="10")
     assert "clave-groq-secreta" not in repr(s)

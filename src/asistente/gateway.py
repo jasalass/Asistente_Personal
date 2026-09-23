@@ -28,20 +28,29 @@ from asistente.vigia.tavily import TavilyBuscador
 log = logging.getLogger(__name__)
 
 
+def cadena_de_modelos(principal: str, respaldos: Sequence[str]) -> list[str]:
+    """El principal primero, luego cada respaldo una sola vez y en el orden dado.
+
+    Cada modelo tiene su propio cupo diario (200K tokens) en el plan gratuito de Groq: si el
+    principal se agota, el chat pasa al siguiente de la lista en vez de quedarse sin responder.
+    Cada respaldo que se agrega es cupo extra, no solo tolerancia a fallos.
+    """
+    cadena = [principal]
+    for modelo in respaldos:
+        if modelo and modelo not in cadena:
+            cadena.append(modelo)
+    return cadena
+
+
 def construir_bot(
     cfg: Settings, *, vigilar_bloqueo: Callable[[], bool | None] | None = None
 ) -> AsistenteBot:
     tz = ZoneInfo(cfg.timezone)
     clave_groq = cfg.groq_api_key.get_secret_value()
-    # Cada modelo tiene su propio cupo diario (200K tokens): si el principal se agota, el chat pasa
-    # al de respaldo en vez de quedarse sin responder.
+    cadena = cadena_de_modelos(cfg.modelo_agente, cfg.modelos_respaldo)
     llm = LLMConRespaldo(
-        GroqLLM(clave_groq, cfg.modelo_agente, reasoning_effort="low"),
-        *(
-            GroqLLM(clave_groq, modelo, reasoning_effort="low")
-            for modelo in (cfg.modelo_respaldo,)
-            if modelo and modelo != cfg.modelo_agente
-        ),
+        GroqLLM(clave_groq, cadena[0], reasoning_effort="low"),
+        *(GroqLLM(clave_groq, modelo, reasoning_effort="low") for modelo in cadena[1:]),
     )
 
     async def responder_async(texto: str, historial: Sequence[dict[str, Any]]) -> ResultadoAgente:

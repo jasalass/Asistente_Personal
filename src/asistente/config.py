@@ -38,11 +38,15 @@ class Settings(BaseSettings):
 
     timezone: str = "America/Santiago"
 
-    # Llama 3.x ya no está en el catálogo de Groq; estos dos pasaron la prueba de tool calling.
+    # Llama 3.x ya no está en el catálogo de Groq; estos pasaron la prueba de tool calling.
     modelo_agente: str = "openai/gpt-oss-120b"
     modelo_resumen: str = "openai/gpt-oss-20b"
-    # Respaldo del chat cuando el principal agota su cupo diario. Vacío = sin respaldo.
-    modelo_respaldo: str = "openai/gpt-oss-20b"
+    # Respaldos del chat, en orden, cuando el principal (o el anterior de la lista) agota su cupo
+    # diario. Cada modelo tiene su propio cupo de 200K tokens/día en el plan gratuito de Groq, así
+    # que cada uno que se agrega es cupo extra, no solo tolerancia a fallos. Vacío = sin respaldo.
+    modelos_respaldo: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+    )
     # Solo para /uso: el tope diario de tokens por modelo en el plan gratuito de Groq.
     groq_limite_diario_tokens: int = 200_000
 
@@ -58,6 +62,13 @@ class Settings(BaseSettings):
     def _parse_channel_ids(cls, v: object) -> object:
         if isinstance(v, str):
             return frozenset(int(x) for x in v.split(",") if x.strip())
+        return v
+
+    @field_validator("modelos_respaldo", mode="before")
+    @classmethod
+    def _parse_modelos_respaldo(cls, v: object) -> object:
+        if isinstance(v, str):
+            return [m.strip() for m in v.split(",") if m.strip()]
         return v
 
     @model_validator(mode="after")
