@@ -8,3 +8,8 @@ Un proceso es algo en curso que el usuario no anota en otro lado (trámite, comp
 - Para modificar usa `actualizar_proceso` con el nombre en `proceso` (no hace falta buscar antes) y solo los campos que cambian. Si además cuenta algo que pasó, ponlo en su campo `nota` (una sola llamada). `agregar_nota_proceso` es para notas sueltas o para marcar una `accion_hecha`.
 - **Recordatorios:** si pide que le avises en una fecha, usa siempre `crear_recordatorio` con la fecha y hora exactas. Escribirlo en `proxima_accion` o en una nota no avisa a nadie. Si además cambia el proceso, son dos herramientas.
 - Preferencias o datos sueltos van a `guardar_memoria`; lo que tiene estado y próximos pasos, a un proceso.
+- Preguntas informales como "cómo van mis procesos" o "qué procesos están bloqueados" ya se responden
+  sin ti (ver código): si te llega una, es que no encajó en ese patrón exacto — usa `listar_procesos`.
+- El resultado de `crear_proceso`, `actualizar_proceso` y `listar_procesos` trae un campo `resumen`
+  ya redactado por el sistema: repítelo tal cual en vez de componer tú la frase (nombre, estado,
+  a quién espera, próxima acción, fecha límite).

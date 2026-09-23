@@ -6,7 +6,8 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from asistente.agenda.atajos import detectar_consulta, redactar
+from asistente.agenda.atajos import detectar_consulta as detectar_consulta_de_agenda
+from asistente.agenda.atajos import redactar as redactar_agenda
 from asistente.agenda.consulta import consultar
 from asistente.agenda.feriados import CalendarioFeriados, Feriados
 from asistente.agent.loop import ResultadoAgente, ejecutar_agente
@@ -14,10 +15,13 @@ from asistente.agent.prompt import construir_prompt
 from asistente.agent.tools import construir_registro
 from asistente.db.connection import Conn
 from asistente.db.repos.auditoria import AuditoriaRepo
+from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
 from asistente.db.repos.trazas import TrazaRepo
 from asistente.llm.base import LLM, LLMNoDisponible
 from asistente.llm.presupuesto import presupuesto_de_espera
+from asistente.procesos.atajos import detectar_consulta as detectar_consulta_de_procesos
+from asistente.procesos.atajos import redactar as redactar_procesos
 
 MSG_PAUSADO = "Estoy en pausa. Usa /reanudar para volver a activarme."
 NOTA_RESPALDO = (
@@ -37,6 +41,27 @@ def _mensaje_sin_modelo(e: LLMNoDisponible) -> str:
             f"Reintenta en unos {math.ceil(e.espera_s)} segundos."
         )
     return MSG_LLM_CAIDO
+
+
+def _resultado_de_atajo(
+    trazas: TrazaRepo, auditoria: AuditoriaRepo, inicio: float, nombre: str,
+    consulta_etiqueta: str, resumen_salida: dict[str, Any], respuesta: str,
+) -> ResultadoAgente:
+    """Registra un atajo (consulta resuelta sin el modelo) igual que un mensaje normal, en 0 tokens."""
+    traza_id = uuid4() if trazas.disponible() else None
+    detalle: dict[str, Any] = {"atajo": nombre, "consulta": consulta_etiqueta}
+    if traza_id:
+        trazas.registrar_paso(
+            traza_id, 1, "atajo", nombre,
+            duracion_ms=int((time.monotonic() - inicio) * 1000),
+            entrada={"consulta": consulta_etiqueta}, salida=resumen_salida,
+        )
+        detalle["traza"] = str(traza_id)
+    auditoria.registrar_ejecucion(
+        "mensaje", duracion_ms=int((time.monotonic() - inicio) * 1000),
+        tokens_in=0, tokens_out=0, detalle=detalle,
+    )
+    return ResultadoAgente(respuesta=respuesta, pasos=0, traza_id=traza_id)
 
 
 def responder(
@@ -61,23 +86,21 @@ def responder(
 
     trazas = TrazaRepo(conn)
     hoy = ahora.astimezone(tz).date()
-    if consulta := detectar_consulta(mensaje, hoy):
+    if consulta := detectar_consulta_de_agenda(mensaje, hoy):
         # "Qué tengo mañana": se responde desde el código, sin modelo (ver agenda/atajos.py).
         dias = consultar(conn, consulta.desde, consulta.dias, tz, feriados or Feriados())
-        traza_id = uuid4() if trazas.disponible() else None
-        detalle: dict[str, Any] = {"atajo": "agenda", "consulta": consulta.etiqueta}
-        if traza_id:
-            trazas.registrar_paso(
-                traza_id, 1, "atajo", "agenda",
-                duracion_ms=int((time.monotonic() - inicio) * 1000),
-                entrada={"consulta": consulta.etiqueta}, salida={"dias": len(dias)},
-            )
-            detalle["traza"] = str(traza_id)
-        auditoria.registrar_ejecucion(
-            "mensaje", duracion_ms=int((time.monotonic() - inicio) * 1000),
-            tokens_in=0, tokens_out=0, detalle=detalle,
+        return _resultado_de_atajo(
+            trazas, auditoria, inicio, "agenda", consulta.etiqueta,
+            {"dias": len(dias)}, redactar_agenda(dias, consulta, hoy),
         )
-        return ResultadoAgente(respuesta=redactar(dias, consulta, hoy), pasos=0, traza_id=traza_id)
+
+    if consulta_p := detectar_consulta_de_procesos(mensaje):
+        # "Cómo van mis procesos": mismo principio (ver procesos/atajos.py).
+        lista = ProcesoRepo(conn).listar(consulta_p.estados, limite=50)
+        return _resultado_de_atajo(
+            trazas, auditoria, inicio, "procesos", consulta_p.etiqueta,
+            {"procesos": len(lista)}, redactar_procesos(lista, consulta_p, tz),
+        )
 
     try:
         with presupuesto_de_espera(PRESUPUESTO_ESPERA_S):

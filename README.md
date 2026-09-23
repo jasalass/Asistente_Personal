@@ -180,6 +180,23 @@ son consultas SQL y mensajes con plantilla, así que no gasta cuota de Groq ni p
   repetirlo. Se registra solo si Discord confirmó el envío; si falla, se reintenta al ciclo siguiente.
 - Con `/pausa` no envía nada. Los procesos completados o cancelados no generan avisos.
 
+### Procesos: trámites y proyectos en curso
+
+Un proceso es algo con estado y próximos pasos que no es una cita con hora (un trámite, una compra,
+una gestión): *"estoy renovando el pasaporte, espero hora del Registro Civil"* crea uno `en_espera`.
+Estados: `idea`, `activo`, `en_espera`, `bloqueado`, `completado`, `cancelado`. Nunca se borran, solo
+se cierran; el historial de notas y cambios de estado queda completo (`ver_historial_proceso`).
+
+- **"Cómo van mis procesos" se responde sin el modelo**, igual que la agenda. Frases como *"cómo van
+  mis procesos"*, *"mis trámites"*, *"qué procesos están bloqueados"* las resuelve el código: 0 tokens,
+  datos tal como están guardados. Una pregunta sobre un proceso puntual ("cómo va el pasaporte") o
+  cualquier orden va al modelo, como siempre.
+- **Resumen redactado por el sistema:** crear, actualizar y listar procesos devuelve un campo
+  `resumen` ya armado (nombre, estado, a quién espera, próxima acción, fecha límite) para que el
+  modelo lo repita en vez de componer la frase de memoria y arriesgarse a omitir algo.
+- El heartbeat ya avisa próxima acción, fecha límite y chequeos periódicos (tabla arriba); no hace
+  falta pedirle que "revise" nada.
+
 ### Agenda: eventos recurrentes y "qué tengo hoy"
 
 Le dices, por ejemplo, *"los lunes tengo clases de Matemática a las 20:30"* y crea un **evento semanal**:

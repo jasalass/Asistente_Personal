@@ -21,7 +21,22 @@ def crear(reg, **campos):
 def test_crear_proceso_ignora_nulos_del_modelo(reg):
     p = crear(reg, estado="en_espera", esperando_a="Registro Civil", descripcion=None, prioridad=None)
     assert p["estado"] == "en_espera" and p["esperando_a"] == "Registro Civil"
-    assert p["prioridad"] == "media" and p["descripcion"] is None
+    # prioridad "media" es la default explícita, así que sí se muestra; descripcion es null y no.
+    assert p["prioridad"] == "media" and "descripcion" not in p
+
+
+def test_crear_y_actualizar_proceso_traen_un_resumen_redactado_por_el_sistema(reg):
+    p = crear(reg, estado="en_espera", esperando_a="Registro Civil")
+    assert p["resumen"] == "Renovar pasaporte — en espera (de Registro Civil)."
+    q = reg.invoke("actualizar_proceso", {"id": p["id"], "estado": "bloqueado", "bloqueo_detalle": "falta foto"})
+    assert q["resumen"] == "Renovar pasaporte — bloqueado: falta foto."
+
+
+def test_listar_procesos_trae_el_resumen_de_cada_uno(reg):
+    crear(reg, nombre="A", estado="activo")
+    crear(reg, nombre="B", estado="bloqueado", bloqueo_detalle="sin turno")
+    resumenes = {p["resumen"] for p in reg.invoke("listar_procesos", {})}
+    assert resumenes == {"A — activo.", "B — bloqueado: sin turno."}
 
 
 def test_crear_proceso_rechaza_estado_inventado_y_campos_extra(reg):
@@ -46,7 +61,7 @@ def test_actualizar_solo_lo_informado_y_null_no_borra(reg):
 def test_actualizar_con_cadena_vacia_borra_el_campo(reg):
     p = crear(reg, esperando_a="Juan")
     q = reg.invoke("actualizar_proceso", {"id": p["id"], "esperando_a": ""})
-    assert q["esperando_a"] is None
+    assert "esperando_a" not in q  # se borró: un campo null no viaja en el resultado compacto
 
 
 def test_actualizar_estado_deja_historial(reg):

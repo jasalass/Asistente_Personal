@@ -122,6 +122,39 @@ def test_una_orden_que_menciona_el_dia_no_es_un_atajo_y_va_al_modelo(conn):
     assert len(llm.llamadas) == 1 and res.respuesta == "Listo, lo anoté."
 
 
+# ---------- consultas de procesos: se responden sin el modelo ----------
+
+
+def test_como_van_mis_procesos_se_responde_sin_llamar_al_modelo(conn):
+    from asistente.db.models import ProcesoEstado, ProcesoNuevo
+    from asistente.db.repos.procesos import ProcesoRepo
+
+    ProcesoRepo(conn).crear(ProcesoNuevo(nombre="Renovar pasaporte", estado=ProcesoEstado.EN_ESPERA,
+                                          esperando_a="Registro Civil"))
+    llm = FakeLLM(texto("NO debería usarse"))
+    res = responder(conn, "como van mis procesos?", llm=llm, tz=TZ, ahora=AHORA)
+    assert llm.llamadas == []
+    assert res.pasos == 0 and res.tokens_in == 0
+    assert res.respuesta == "• Renovar pasaporte — en espera (de Registro Civil)."
+    ejec = conn.execute(
+        "select tokens_in, detalle from ejecuciones where tipo = 'mensaje' order by id desc limit 1"
+    ).fetchone()
+    assert ejec["tokens_in"] == 0
+    assert ejec["detalle"]["atajo"] == "procesos" and ejec["detalle"]["consulta"] == "abiertos"
+
+
+def test_sin_procesos_abiertos_el_atajo_lo_dice_sin_el_modelo(conn):
+    llm = FakeLLM(texto("NO debería usarse"))
+    res = responder(conn, "mis procesos", llm=llm, tz=TZ, ahora=AHORA)
+    assert llm.llamadas == [] and res.respuesta == "No tienes procesos abiertos."
+
+
+def test_una_orden_sobre_un_proceso_puntual_no_es_un_atajo_y_va_al_modelo(conn):
+    llm = FakeLLM(texto("Listo, lo anoté."))
+    res = responder(conn, "como va el proceso del pasaporte", llm=llm, tz=TZ, ahora=AHORA)
+    assert len(llm.llamadas) == 1 and res.respuesta == "Listo, lo anoté."
+
+
 def test_en_pausa_tampoco_responde_las_consultas_de_agenda(conn):
     EstadoSistemaRepo(conn).set_pausado(True)
     res = responder(conn, "que tengo hoy?", llm=FakeLLM(), tz=TZ, ahora=AHORA)

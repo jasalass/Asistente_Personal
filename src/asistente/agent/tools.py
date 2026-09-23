@@ -43,6 +43,7 @@ from asistente.db.repos.memorias import MemoriaRepo
 from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.recordatorios import RecordatorioRepo
 from asistente.db.repos.temas import TemaRepo
+from asistente.procesos.redaccion import describir_proceso
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
 
 _CERRADOS = (ProcesoEstado.COMPLETADO, ProcesoEstado.CANCELADO)
@@ -352,9 +353,15 @@ def construir_registro(
             temas.buscar_por_nombre(tema, limite=8), tema, lambda t: not t.activo, "tema", "listar_temas"
         )
 
+    def con_resumen(p) -> dict:
+        """Compacto y con una frase ya redactada, para que el modelo la relea en vez de componerla."""
+        resultado = p.model_dump(mode="json", exclude_none=True, exclude={"creado_en", "actualizado_en"})
+        resultado["resumen"] = describir_proceso(p, tz)
+        return resultado
+
     def listar_procesos(estados=None, limite=20, texto=None):
         lista = procesos.buscar_por_nombre(texto, limite) if texto else procesos.listar(estados, limite)
-        return [p.model_dump(mode="json") for p in lista]
+        return [con_resumen(p) for p in lista]
 
     def crear_proceso(**campos):
         nombre = campos["nombre"]
@@ -365,7 +372,7 @@ def construir_registro(
                     "Actualízalo en lugar de crear otro."
                 )
         campos["proxima_accion_fecha"] = fecha_hora(campos.get("proxima_accion_fecha"))
-        return procesos.crear(ProcesoNuevo(**campos)).model_dump(mode="json")
+        return con_resumen(procesos.crear(ProcesoNuevo(**campos)))
 
     def actualizar_proceso(id=None, proceso=None, **campos):
         pid = resolver_proceso(id, proceso).id
@@ -378,7 +385,7 @@ def construir_registro(
         actualizado = procesos.actualizar(pid, ProcesoActualizacion(**campos))
         if nota:
             procesos.agregar_evento(pid, EventoTipo.NOTA, nota)
-        return actualizado.model_dump(mode="json")
+        return con_resumen(actualizado)
 
     def agregar_nota_proceso(nota, id=None, proceso=None, tipo=EventoTipo.NOTA):
         pid = resolver_proceso(id, proceso).id
