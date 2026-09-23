@@ -12,7 +12,7 @@ from asistente.agenda.atajos import detectar_consulta as detectar_consulta_de_ag
 from asistente.agenda.atajos import redactar as redactar_agenda
 from asistente.agenda.consulta import consultar
 from asistente.agenda.feriados import CalendarioFeriados, Feriados
-from asistente.agent.loop import ResultadoAgente, ejecutar_agente
+from asistente.agent.loop import ResultadoAgente, _describir_accion, ejecutar_agente
 from asistente.agent.prompt import construir_prompt
 from asistente.agent.tools import construir_registro
 from asistente.db.connection import Conn
@@ -187,5 +187,7 @@ def resolver_aprobacion(
     resultado = salida if isinstance(salida, dict) else {"resultado": salida}
     acciones.marcar_ejecutada(accion_id, resuelto_por, resultado)
     auditoria.registrar("owner", "aprobacion:aprobada", {"id": str(accion_id), "tool": fila.tool})
-    resumen = resultado.get("resumen")
-    return f"Aprobado. {resumen}" if resumen else f"Aprobado: {fila.tool} se ejecutó."
+    # Misma redacción que ya usa el resumen de "alcancé a hacer esto": no inventar una segunda.
+    descripcion = _describir_accion(fila.tool, resultado)
+    detalle = descripcion.removeprefix("• ") if descripcion else f"{fila.tool} se ejecutó"
+    return f"Aprobado: {detalle}"

@@ -196,6 +196,16 @@ def test_aprobar_ejecuta_la_tool_de_verdad(conn_aprobaciones):
     assert RecordatorioRepo(conn_aprobaciones).buscar_por_texto("banco") == []  # de verdad se canceló
 
 
+def test_al_aprobar_se_reusa_la_misma_redaccion_que_el_resumen_de_acciones(conn_aprobaciones):
+    # Caso real: "Aprobado: cancelar_recordatorio se ejecutó." era menos claro que lo que el
+    # sistema ya sabe redactar para este mismo caso en otros lados.
+    from asistente.agent.service import resolver_aprobacion
+
+    fila = _proponer_cancelar(conn_aprobaciones, "Viaje a Concepción")
+    texto = resolver_aprobacion(conn_aprobaciones, fila.id, aprobar=True, resuelto_por="123", tz=TZ)
+    assert texto == "Aprobado: Cancelé el recordatorio «Viaje a Concepción»"
+
+
 def test_rechazar_no_ejecuta_nada(conn_aprobaciones):
     from asistente.agent.service import resolver_aprobacion
     from asistente.db.repos.recordatorios import RecordatorioRepo

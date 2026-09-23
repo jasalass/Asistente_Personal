@@ -278,12 +278,20 @@ def _accion(**kw):
     return AccionPendiente(**{**base, **kw})
 
 
-def test_crear_embed_propuesta_muestra_la_tool_y_los_argumentos():
+def test_humanizar_tool_convierte_verbo_sustantivo_en_pregunta():
+    from asistente.discord_bot.bot import _humanizar_tool
+
+    assert _humanizar_tool("cancelar_recordatorio") == "Cancelar recordatorio"
+    assert _humanizar_tool("actualizar_evento") == "Actualizar evento"
+
+
+def test_crear_embed_propuesta_pregunta_en_lenguaje_natural():
     from asistente.discord_bot.bot import crear_embed_propuesta
 
     embed = crear_embed_propuesta(_accion(), TZ)
-    assert "enviar_email" in embed.title
+    assert embed.title == "¿Enviar email?"  # no el nombre crudo de la función
     assert "b@c.cl" in embed.description
+    assert "enviar_email" in embed.footer.text  # el nombre técnico queda igual, en chico
 
 
 def test_on_message_manda_un_embed_y_una_vista_por_cada_propuesta():
@@ -301,7 +309,7 @@ def test_on_message_manda_un_embed_y_una_vista_por_cada_propuesta():
     msg = _Mensaje()
     asyncio.run(bot.on_message(msg))
     assert msg.respuestas == ["Espero tu OK."]
-    assert len(msg.channel.embeds) == 1 and "enviar_email" in msg.channel.embeds[0].title
+    assert len(msg.channel.embeds) == 1 and msg.channel.embeds[0].title == "¿Enviar email?"
     assert len(msg.channel.vistas) == 1
 
 

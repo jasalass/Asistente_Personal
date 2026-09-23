@@ -73,13 +73,24 @@ def crear_embed(pub: Publicacion) -> discord.Embed:
     return embed
 
 
+def _humanizar_tool(nombre: str) -> str:
+    """'cancelar_recordatorio' -> 'Cancelar recordatorio'. Todas las tools siguen la convención
+    verbo_sustantivo, así que esto alcanza para leerse como una pregunta natural."""
+    palabras = nombre.replace("_", " ")
+    return palabras[:1].upper() + palabras[1:]
+
+
 def crear_embed_propuesta(accion: AccionPendiente, tz: ZoneInfo) -> discord.Embed:
-    """Qué tool, con qué argumentos y hasta cuándo se puede aprobar."""
+    """La pregunta en lenguaje natural, con qué argumentos y hasta cuándo se puede aprobar."""
     detalle = "\n".join(f"**{k}**: {v}" for k, v in accion.args.items()) or "(sin argumentos)"
     embed = discord.Embed(
-        title=f"¿Aprobar «{accion.tool}»?", description=detalle[:4000], color=discord.Color.orange()
+        title=f"¿{_humanizar_tool(accion.tool)}?",
+        description=detalle[:4000],
+        color=discord.Color.orange(),
     )
-    embed.set_footer(text=f"Expira el {accion.expira_en.astimezone(tz):%d/%m a las %H:%M}")
+    embed.set_footer(
+        text=f"{accion.tool} · expira el {accion.expira_en.astimezone(tz):%d/%m a las %H:%M}"
+    )
     return embed
 
 
