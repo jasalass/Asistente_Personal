@@ -275,8 +275,8 @@ def test_no_se_duplican_los_eventos(reg):
 
 
 def test_cambiar_hora_y_dias_por_nombre(reg):
-    reg.invoke("crear_evento", {"nombre": "Reunión de equipo", "dias": ["lunes"], "hora": "10:00"})
-    e = reg.invoke("actualizar_evento", {"evento": "reunión", "hora": "11:30", "dias": ["martes", "jueves"]})
+    reg.invoke("crear_evento", {"nombre": "TST Reunión de prueba", "dias": ["lunes"], "hora": "10:00"})
+    e = reg.invoke("actualizar_evento", {"evento": "TST Reunión", "hora": "11:30", "dias": ["martes", "jueves"]})
     assert e["hora"] == "11:30:00" and e["dias_semana"] == [2, 4]
     assert e["proximas"][0] == "martes 22/09 11:30"
 

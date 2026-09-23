@@ -225,7 +225,7 @@ lo reinicie: es preferible caer a responder por duplicado.
   con mi base de datos, reintenta en un minuto".
 - **Supervisor para tu PC:** `.\scripts\ejecutar_asistente.ps1` ejecuta el asistente y lo reinicia si
   termina con error (espera creciente de 15 s hasta 5 min). Un apagado normal no se reinicia. En la
-  nube esa función la cumple el orquestador (por ejemplo, un servicio de ECS).
+  nube esa función la cumple el orquestador (systemd en la VM de GCP — ver `deploy/gcp/GUIA.md`).
 - Al arrancar y al apagarse con normalidad, el bot publica un aviso en `#avisos` con el nombre del
   equipo (`Asistente en línea en <equipo>`). Una caída brusca no puede avisar; se nota porque el aviso
   de arranque aparece de nuevo cuando el supervisor lo reinicia.
@@ -320,3 +320,4 @@ vigía publica en `#vigia-temas` un embed por artículo: **título, resumen y li
 - [ ] Brief matutino en `#brief` con la agenda del día
 - [ ] Google Calendar / Gmail, Microsoft Graph
 - [ ] Acciones acotadas con guardrails (whitelist, modo "propone, no ejecuta", auditoría)
+- [ ] Desplegar 24/7 en una VM `e2-micro` de GCP (nivel gratis permanente) — guía en `deploy/gcp/GUIA.md`

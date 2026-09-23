@@ -1,0 +1,50 @@
+name: Deploy a GCP
+
+# Al hacer push a main: se conecta a la VM por un túnel de IAP (sin exponer el puerto 22 a
+# internet) y ejecuta deploy/gcp/deploy.sh, que ya vive en la VM (ver deploy/gcp/GUIA.md, paso 9).
+on:
+  push:
+    branches: [main]
+
+# Nunca dos despliegues a la vez, y nunca se corta uno a mitad de camino.
+concurrency:
+  group: deploy-produccion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  desplegar:
+    runs-on: ubuntu-latest
+    environment: produccion
+    steps:
+      - name: Autenticar con la cuenta de servicio (solo túnel IAP, sin permisos de admin)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Instalar gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Abrir el túnel hacia la VM (puerto 22 nunca sale a internet)
+        run: |
+          gcloud compute start-iap-tunnel "${{ vars.VM_NAME }}" 22 \
+            --local-host-port=localhost:2222 \
+            --zone="${{ vars.GCP_ZONE }}" \
+            --project="${{ vars.GCP_PROJECT_ID }}" &
+          for _ in $(seq 1 15); do
+            (echo > /dev/tcp/localhost/2222) 2>/dev/null && exit 0
+            sleep 1
+          done
+          echo "El túnel no levantó a tiempo" >&2 && exit 1
+
+      - name: Desplegar (el comando real lo fuerza el authorized_keys de la VM, no este paso)
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 600 /dev/null deploy_key
+          printf '%s\n' "$SSH_KEY" > deploy_key
+          ssh -i deploy_key -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            deploy@localhost
+          rm -f deploy_key

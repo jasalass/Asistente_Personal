@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from asistente.agent.loop import MSG_SIN_RESPUESTA, ejecutar_agente
 from asistente.llm.base import LLMNoDisponible, LLMRespuesta, ToolCall
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
-from tests.fakes import FakeAuditoria, FakeLLM, llamada, texto
+from tests.fakes import FakeAuditoria, FakeLLM, FakeTrazas, llamada, texto
 
 
 class EcoArgs(BaseModel):
@@ -169,3 +169,46 @@ def test_una_herramienta_que_fallo_no_cuenta_como_algo_hecho():
 def test_sin_llamadas_previas_el_error_del_modelo_se_propaga():
     with pytest.raises(LLMNoDisponible):
         correr(FakeLLM(LLMNoDisponible("sin cupo")), registro_con_escritura([]))
+
+
+# ---------- trazas: un paso por cada llamada al LLM y a cada tool, cuando hay tabla ----------
+
+
+def test_sin_trazas_el_resultado_no_trae_id():
+    res, _ = correr(FakeLLM(texto("ok")))
+    assert res.traza_id is None
+
+
+def test_si_la_tabla_no_esta_disponible_no_se_registra_ningun_paso():
+    trazas = FakeTrazas(disponible=False)
+    res, _ = correr(FakeLLM(texto("ok")), trazas=trazas)
+    assert res.traza_id is None and trazas.pasos == []
+
+
+def test_con_trazas_se_registra_cada_llamada_al_llm_y_cada_tool():
+    llm = FakeLLM(llamada("eco", {"valor": "x"}), texto("hecho"))
+    trazas = FakeTrazas()
+    res, _ = correr(llm, hacer_registro([]), trazas=trazas)
+    assert res.traza_id is not None
+    secuencia = [(p["orden"], p["tipo"], p["nombre"]) for p in trazas.pasos]
+    assert secuencia == [(1, "llm", "?"), (2, "tool", "eco"), (3, "llm", "?")]
+    paso_tool = trazas.pasos[1]
+    assert paso_tool["entrada"] == {"valor": "x"} and paso_tool["salida"] == {"eco": "x"}
+    assert paso_tool["error"] is None and paso_tool["duracion_ms"] is not None
+
+
+def test_una_tool_que_falla_se_traza_con_su_error_y_sin_salida():
+    llm = FakeLLM(llamada("falla", {}), texto("ok"))
+    trazas = FakeTrazas()
+    correr(llm, trazas=trazas)
+    (_, paso_tool, _) = trazas.pasos
+    assert paso_tool["tipo"] == "tool" and paso_tool["error"] == "no existe" and paso_tool["salida"] is None
+
+
+def test_un_rechazo_de_esquema_se_traza_como_error_del_paso_llm():
+    from asistente.llm.base import ToolCallRechazado
+
+    llm = FakeLLM(ToolCallRechazado("mal esquema"), texto("ok"))
+    trazas = FakeTrazas()
+    correr(llm, trazas=trazas)
+    assert trazas.pasos[0]["tipo"] == "llm" and trazas.pasos[0]["error"] == "mal esquema"

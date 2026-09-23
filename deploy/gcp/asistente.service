@@ -1,0 +1,32 @@
+[Unit]
+Description=Asistente personal (chief of staff)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=asistente
+Group=asistente
+WorkingDirectory=/opt/asistente
+# pydantic-settings lee .env desde el directorio de trabajo: no hace falta EnvironmentFile.
+ExecStart=/opt/asistente/.venv/bin/python -m asistente
+Restart=on-failure
+RestartSec=15
+# Si se reinicia sin parar más de 5 veces en 10 min, algo está realmente roto: se deja apagado
+# en vez de martillar la base y a Groq. `systemctl status asistente` explica por qué.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+# Un apagado normal (systemctl stop) manda SIGTERM y sale con código 0: no reinicia.
+# Perder el bloqueo de instancia o un error no manejado sale con código distinto de 0: sí reinicia.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Endurecimiento básico: el proceso no necesita nada de esto.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/asistente
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

@@ -3,6 +3,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from asistente.agenda.atajos import detectar_consulta, redactar
@@ -14,6 +15,7 @@ from asistente.agent.tools import construir_registro
 from asistente.db.connection import Conn
 from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
+from asistente.db.repos.trazas import TrazaRepo
 from asistente.llm.base import LLM, LLMNoDisponible
 from asistente.llm.presupuesto import presupuesto_de_espera
 
@@ -57,18 +59,25 @@ def responder(
     auditoria = AuditoriaRepo(conn)
     inicio = time.monotonic()
 
+    trazas = TrazaRepo(conn)
     hoy = ahora.astimezone(tz).date()
     if consulta := detectar_consulta(mensaje, hoy):
         # "Qué tengo mañana": se responde desde el código, sin modelo (ver agenda/atajos.py).
         dias = consultar(conn, consulta.desde, consulta.dias, tz, feriados or Feriados())
+        traza_id = uuid4() if trazas.disponible() else None
+        detalle: dict[str, Any] = {"atajo": "agenda", "consulta": consulta.etiqueta}
+        if traza_id:
+            trazas.registrar_paso(
+                traza_id, 1, "atajo", "agenda",
+                duracion_ms=int((time.monotonic() - inicio) * 1000),
+                entrada={"consulta": consulta.etiqueta}, salida={"dias": len(dias)},
+            )
+            detalle["traza"] = str(traza_id)
         auditoria.registrar_ejecucion(
-            "mensaje",
-            duracion_ms=int((time.monotonic() - inicio) * 1000),
-            tokens_in=0,
-            tokens_out=0,
-            detalle={"atajo": "agenda", "consulta": consulta.etiqueta},
+            "mensaje", duracion_ms=int((time.monotonic() - inicio) * 1000),
+            tokens_in=0, tokens_out=0, detalle=detalle,
         )
-        return ResultadoAgente(respuesta=redactar(dias, consulta, hoy), pasos=0)
+        return ResultadoAgente(respuesta=redactar(dias, consulta, hoy), pasos=0, traza_id=traza_id)
 
     try:
         with presupuesto_de_espera(PRESUPUESTO_ESPERA_S):
@@ -79,6 +88,7 @@ def responder(
                 auditoria=auditoria,
                 system_prompt=construir_prompt(ahora, tz),
                 historial=historial,
+                trazas=trazas,
             )
     except LLMNoDisponible as e:
         auditoria.registrar_ejecucion(
@@ -86,18 +96,21 @@ def responder(
         )
         return ResultadoAgente(respuesta=_mensaje_sin_modelo(e))
 
+    detalle = {
+        "pasos": resultado.pasos,
+        "propuestas": len(resultado.propuestas),
+        "modelos": sorted(resultado.modelos),
+        "respaldo": resultado.usa_respaldo,
+    }
+    if resultado.traza_id:
+        detalle["traza"] = str(resultado.traza_id)
     auditoria.registrar_ejecucion(
         "mensaje",
         duracion_ms=int((time.monotonic() - inicio) * 1000),
         tokens_in=resultado.tokens_in,
         tokens_out=resultado.tokens_out,
         error="respuesta parcial: el modelo no estuvo disponible" if resultado.parcial else None,
-        detalle={
-            "pasos": resultado.pasos,
-            "propuestas": len(resultado.propuestas),
-            "modelos": sorted(resultado.modelos),
-            "respaldo": resultado.usa_respaldo,
-        },
+        detalle=detalle,
     )
     if resultado.usa_respaldo:
         # El modelo de respaldo es menos fiable: el usuario debe saberlo para revisar lo hecho.

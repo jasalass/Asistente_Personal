@@ -40,3 +40,17 @@ class FakeAuditoria:
 
     def registrar_ejecucion(self, *args, **kwargs):
         pass
+
+
+class FakeTrazas:
+    """Guarda los pasos tal cual se los pasan, sin recortarlos (eso lo prueba test_trazas.py aparte)."""
+
+    def __init__(self, disponible: bool = True) -> None:
+        self._disponible = disponible
+        self.pasos: list[dict[str, Any]] = []
+
+    def disponible(self) -> bool:
+        return self._disponible
+
+    def registrar_paso(self, traza_id, orden, tipo, nombre, **kw):
+        self.pasos.append({"traza_id": traza_id, "orden": orden, "tipo": tipo, "nombre": nombre, **kw})

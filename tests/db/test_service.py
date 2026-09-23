@@ -112,7 +112,8 @@ def test_que_tengo_manana_se_responde_sin_llamar_al_modelo_y_con_los_datos_exact
     ejec = conn_agenda.execute(
         "select tokens_in, detalle from ejecuciones where tipo = 'mensaje' order by id desc limit 1"
     ).fetchone()
-    assert ejec["tokens_in"] == 0 and ejec["detalle"] == {"atajo": "agenda", "consulta": "mañana"}
+    assert ejec["tokens_in"] == 0
+    assert ejec["detalle"]["atajo"] == "agenda" and ejec["detalle"]["consulta"] == "mañana"
 
 
 def test_una_orden_que_menciona_el_dia_no_es_un_atajo_y_va_al_modelo(conn):

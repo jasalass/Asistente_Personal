@@ -54,3 +54,11 @@ def conn_vigia(conn):
     if not _hay_tablas_del_vigia(conn):
         pytest.skip("Falta aplicar supabase/migrations/0003_vigia.sql")
     return conn
+
+
+@pytest.fixture
+def conn_trazas(conn):
+    """Como `conn`, pero se omite si aún no se aplicó la migración 0005_trazas.sql."""
+    if conn.execute("select to_regclass('public.traza_pasos') as t").fetchone()["t"] is None:
+        pytest.skip("Falta aplicar supabase/migrations/0005_trazas.sql")
+    return conn
