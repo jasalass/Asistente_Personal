@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from asistente.db.connection import Conn
+from asistente.db.repos.trazas import TrazaRepo
 
 _ETIQUETAS = {"mensaje": ("Chat", "mensaje", "mensajes"), "vigia": ("Vigía", "corrida", "corridas")}
 
@@ -36,6 +37,18 @@ def texto_uso(conn: Conn, ahora: datetime, tz: ZoneInfo, limite_diario: int) -> 
             f"• {nombre}: {_miles(tokens)} tokens en {n} {singular if n == 1 else plural} "
             f"({pct} % de {_miles(limite_diario)})"
         )
+
+    # Desde que hay más de un modelo en la cadena, "% de 200.000" mezclaba cupos separados: con
+    # tres modelos de respaldo, 250K repartidos entre dos no es "125 % agotado", son dos cupos
+    # distintos. Se desglosa por modelo cuando hay trazas (migración 0005); si no, se omite.
+    trazas = TrazaRepo(conn)
+    if trazas.disponible() and (por_modelo := trazas.consumo_por_modelo(desde)):
+        lineas.append("  Por modelo (cada uno con su propio cupo):")
+        for fila in por_modelo:
+            tokens = int(fila["tokens"])
+            pct = round(100 * tokens / limite_diario) if limite_diario else 0
+            lineas.append(f"    - {fila['nombre']}: {_miles(tokens)} tokens ({pct} % de {_miles(limite_diario)})")
+
     lineas.append(
         "_El cupo de Groq se cuenta por modelo y por día. Esto no incluye pruebas manuales ni "
         "otros usos de la misma clave._"

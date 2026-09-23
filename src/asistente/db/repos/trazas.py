@@ -2,6 +2,7 @@
 sin adivinar. Cada mensaje que pasa por el agente genera un traza_id; cada paso se inserta al
 ocurrir, no hay que actualizar nada después (la tabla es append-only, igual que auditoria)."""
 
+from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -57,11 +58,12 @@ class TrazaRepo:
         entrada: Any = None,
         salida: Any = None,
         error: str | None = None,
+        ts: datetime | None = None,  # solo para pruebas; en producción manda clock_timestamp()
     ) -> None:
         self._conn.execute(
             "insert into traza_pasos "
-            "(traza_id, orden, tipo, nombre, duracion_ms, tokens_in, tokens_out, entrada, salida, error) "
-            "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "(traza_id, orden, tipo, nombre, duracion_ms, tokens_in, tokens_out, entrada, salida, error, ts) "
+            "values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, coalesce(%s, clock_timestamp()))",
             (
                 str(traza_id),
                 orden,
@@ -73,6 +75,7 @@ class TrazaRepo:
                 Jsonb(_apto_para_jsonb(entrada)) if entrada is not None else None,
                 Jsonb(_apto_para_jsonb(salida)) if salida is not None else None,
                 error,
+                ts,
             ),
         )
 
@@ -93,4 +96,13 @@ class TrazaRepo:
             "select orden, tipo, nombre, duracion_ms, tokens_in, tokens_out, entrada, salida, error, ts "
             "from traza_pasos where traza_id = %s order by orden",
             (str(traza_id),),
+        ).fetchall()
+
+    def consumo_por_modelo(self, desde: Any) -> list[dict[str, Any]]:
+        """Tokens gastados desde `desde`, por modelo (cada uno con su propio cupo en Groq)."""
+        return self._conn.execute(
+            "select nombre, coalesce(sum(tokens_in), 0) + coalesce(sum(tokens_out), 0) as tokens "
+            "from traza_pasos where tipo = 'llm' and nombre != '?' and ts >= %s "
+            "group by nombre order by tokens desc",
+            (desde,),
         ).fetchall()

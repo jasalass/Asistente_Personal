@@ -37,6 +37,29 @@ def test_disponible_es_true_una_vez_aplicada_la_migracion(conn_trazas):
     assert TrazaRepo(conn_trazas).disponible() is True
 
 
+def test_el_ts_se_puede_fijar_para_pruebas(conn_trazas):
+    from datetime import UTC, datetime
+
+    repo = TrazaRepo(conn_trazas)
+    tid = uuid4()
+    fijo = datetime(2030, 1, 1, tzinfo=UTC)
+    repo.registrar_paso(tid, 1, "llm", "modelo", ts=fijo)
+    (paso,) = repo.para(tid)
+    assert paso["ts"] == fijo
+
+
+def test_consumo_por_modelo_suma_desde_una_fecha(conn_trazas):
+    from datetime import UTC, datetime
+
+    repo = TrazaRepo(conn_trazas)
+    antes, despues = datetime(2029, 1, 1, tzinfo=UTC), datetime(2030, 1, 1, tzinfo=UTC)
+    repo.registrar_paso(uuid4(), 1, "llm", "a", tokens_in=10, tokens_out=5, ts=antes)
+    repo.registrar_paso(uuid4(), 1, "llm", "b", tokens_in=100, tokens_out=0, ts=despues)
+    repo.registrar_paso(uuid4(), 1, "llm", "b", tokens_in=50, tokens_out=0, ts=despues)
+    filas = {f["nombre"]: f["tokens"] for f in repo.consumo_por_modelo(despues)}
+    assert filas == {"b": 150}  # "a" quedó antes del corte
+
+
 # ---------- recorte de datos grandes o anidados, antes de llegar a la base ----------
 
 

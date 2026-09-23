@@ -11,15 +11,25 @@
   .\scripts\ejecutar_asistente.ps1
 #>
 param(
-    [string]$Python = ".\.venv\Scripts\python.exe",
+    # Ruta absoluta, derivada de dónde vive este script (no del directorio de trabajo de quien lo
+    # invoca): una ruta relativa que no resuelve puede terminar silenciosamente en el Python del
+    # sistema si algo relanza este script desde otro cwd, y ahí no hay bloqueo de instancia que
+    # valga porque igual sería un proceso nuevo con las dependencias correctas — pero un Python
+    # sin el venv puede fallar de formas menos claras. Mejor fallar fuerte si no existe.
+    [string]$Python = (Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"),
     [string[]]$Argumentos = @("-m", "asistente"),
     [int]$EsperaSegundos = 15,
     [int]$EsperaMaximaSegundos = 300,
     [int]$MaxReinicios = 0  # 0 = sin límite
 )
 
+if (-not (Test-Path $Python)) {
+    Write-Error "No existe el Python del venv en '$Python'. ¿Falta crear el entorno (.venv)?"
+    exit 1
+}
+
 $env:PYTHONIOENCODING = "utf-8"
-$env:PYTHONPATH = "src"
+$env:PYTHONPATH = Join-Path $PSScriptRoot "..\src"
 $reinicios = 0
 $espera = $EsperaSegundos
 
