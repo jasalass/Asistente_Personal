@@ -10,6 +10,7 @@ from asistente.agenda.feriados import CalendarioFeriados, Feriados
 from asistente.agenda.ocurrencias import Ocurrencia, ocurrencia
 from asistente.db.connection import Conn
 from asistente.db.models import EventoTipo, Proceso
+from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
 from asistente.db.repos.agenda import EventoRepo
 from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.procesos import ProcesoRepo
@@ -54,6 +55,7 @@ def recolectar(
         avisos += _proxima_accion(conn, ahora, tz)
         avisos += _fecha_limite(conn, ahora, tz)
         avisos += _chequeos(conn, ahora)
+        avisos += _acciones_vencidas(conn, ahora)
     return avisos
 
 
@@ -223,3 +225,21 @@ def _marcar_chequeo(conn: Conn, proceso_id, ahora: datetime) -> None:
     repo = ProcesoRepo(conn)
     repo.marcar_chequeado(proceso_id, ahora)
     repo.agregar_evento(proceso_id, EventoTipo.CHEQUEO_AGENTE, "Aviso de chequeo enviado")
+
+
+def _acciones_vencidas(conn: Conn, ahora: datetime) -> list[Aviso]:
+    """Una propuesta que nadie aprobó ni rechazó en 24 h ya no se puede ejecutar: se avisa y se
+    cierra, para que no quede un botón muerto esperando para siempre."""
+    avisos = []
+    for a in AccionesPendientesRepo(conn).vencidas(ahora):
+        avisos.append(
+            Aviso(
+                clave=f"ap:{a.id}:vencida",
+                texto=(
+                    f"La propuesta **{a.tool}** expiró sin que la aprobaras ni rechazaras "
+                    "(pasaron más de 24 h); ya no se puede ejecutar."
+                ),
+                confirmar=lambda c, aid=a.id: AccionesPendientesRepo(c).marcar_expirada(aid),
+            )
+        )
+    return avisos

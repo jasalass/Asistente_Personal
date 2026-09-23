@@ -5,16 +5,19 @@ import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import psycopg
 
 from asistente.agent.loop import ResultadoAgente
-from asistente.agent.service import responder
+from asistente.agent.service import resolver_aprobacion, responder
 from asistente.bloqueo import BloqueoInstancia
 from asistente.config import Settings, get_settings
 from asistente.db.connection import transaccion
+from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
 from asistente.db.repos.agenda import EventoRepo
+from asistente.db.repos.tool_niveles import NivelesRepo
 from asistente.discord_bot.bot import AsistenteBot, ejecutar
 from asistente.discord_bot.despachador import Despachador
 from asistente.heartbeat.runner import latido
@@ -127,9 +130,32 @@ def construir_bot(
 
         return await asyncio.to_thread(leer)
 
+    if not tabla_niveles_existe():
+        log.warning(
+            "Faltan las tablas de aprobaciones: ejecuta supabase/migrations/0006_aprobaciones.sql. "
+            "Los botones Aprobar/Rechazar no van a poder resolverse mientras tanto."
+        )
+
+    async def resolver_aprobacion_async(accion_id: UUID, aprobar: bool, resuelto_por: int) -> str:
+        def trabajo() -> str:
+            with transaccion() as conn:
+                return resolver_aprobacion(
+                    conn, accion_id, aprobar=aprobar, resuelto_por=str(resuelto_por), tz=tz
+                )
+
+        return await asyncio.to_thread(trabajo)
+
+    async def pendientes_al_arrancar_async() -> list[UUID]:
+        def trabajo() -> list[UUID]:
+            with transaccion() as conn:
+                return AccionesPendientesRepo(conn).pendientes_ids()
+
+        return await asyncio.to_thread(trabajo)
+
     return AsistenteBot(
         allowlist,
         Despachador(allowlist, responder_async),
+        tz=tz,
         latido=latido_fn,
         canal_avisos_id=cfg.discord_canal_avisos_id,
         vigia=vigia_fn,
@@ -137,6 +163,8 @@ def construir_bot(
         canal_vigia_id=cfg.discord_canal_vigia_id,
         uso=uso_async,
         vigilar_bloqueo=vigilar_bloqueo,
+        resolver_aprobacion=resolver_aprobacion_async,
+        pendientes_al_arrancar=pendientes_al_arrancar_async,
     )
 
 
@@ -158,6 +186,11 @@ def tablas_del_vigia_existen() -> bool:
     except psycopg.errors.UndefinedTable:
         return False
     return True
+
+
+def tabla_niveles_existe() -> bool:
+    with transaccion() as conn:
+        return NivelesRepo(conn).disponible()
 
 
 def advertir_si_falta_la_agenda() -> None:

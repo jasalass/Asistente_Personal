@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from asistente.agent.loop import MSG_SIN_RESPUESTA, ejecutar_agente
 from asistente.llm.base import LLMNoDisponible, LLMRespuesta, ToolCall
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
-from tests.fakes import FakeAuditoria, FakeLLM, FakeTrazas, llamada, texto
+from tests.fakes import FakeAcciones, FakeAuditoria, FakeLLM, FakeTrazas, llamada, texto
 
 
 class EcoArgs(BaseModel):
@@ -94,6 +94,21 @@ def test_tool_propone_genera_propuesta_y_no_ejecuta():
     assert len(res.propuestas) == 1 and res.propuestas[0].tool == "enviar_email"
     assert json.loads(llm.llamadas[1][-1]["content"])["estado"] == "pendiente_de_aprobacion"
     assert aud.registros[0][2]["estado"] == "propuesta"
+    assert res.acciones_pendientes == []  # sin repo de acciones: no hay nada que persistir
+
+
+def test_con_acciones_la_propuesta_queda_persistida_para_discord():
+    llm = FakeLLM(llamada("enviar_email", {"to": "a@b.cl"}), texto("Espero tu OK"))
+    aud = FakeAuditoria()
+    acciones = FakeAcciones()
+    res = ejecutar_agente(
+        "hola", llm=llm, registro=hacer_registro([]), auditoria=aud, system_prompt="sp",
+        acciones=acciones,
+    )
+    assert len(acciones.creadas) == 1 and acciones.creadas[0].tool == "enviar_email"
+    assert res.acciones_pendientes == acciones.creadas
+    assert aud.registros[0][2]["id"] == str(acciones.creadas[0].id)
+    assert "Discord" in json.loads(llm.llamadas[1][-1]["content"])["mensaje"]
 
 
 def test_tope_de_pasos_corta_el_ciclo():

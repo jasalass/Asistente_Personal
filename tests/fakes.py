@@ -54,3 +54,19 @@ class FakeTrazas:
 
     def registrar_paso(self, traza_id, orden, tipo, nombre, **kw):
         self.pasos.append({"traza_id": traza_id, "orden": orden, "tipo": tipo, "nombre": nombre, **kw})
+
+
+class FakeAcciones:
+    """Simula AccionesPendientesRepo: cada crear() devuelve un objeto con id, sin tocar la base."""
+
+    def __init__(self) -> None:
+        self.creadas: list[Any] = []
+        self._siguiente_id = 1
+
+    def crear(self, tool, args, payload_hash):
+        from types import SimpleNamespace
+
+        fila = SimpleNamespace(id=self._siguiente_id, tool=tool, args=args, payload_hash=payload_hash)
+        self._siguiente_id += 1
+        self.creadas.append(fila)
+        return fila

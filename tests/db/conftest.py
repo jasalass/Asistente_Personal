@@ -62,3 +62,13 @@ def conn_trazas(conn):
     if conn.execute("select to_regclass('public.traza_pasos') as t").fetchone()["t"] is None:
         pytest.skip("Falta aplicar supabase/migrations/0005_trazas.sql")
     return conn
+
+
+@pytest.fixture
+def conn_aprobaciones(conn):
+    """Como `conn`, pero se omite si aún no se aplicó la migración 0006_aprobaciones.sql."""
+    if conn.execute("select to_regclass('public.tool_niveles') as t").fetchone()["t"] is None:
+        pytest.skip("Falta aplicar supabase/migrations/0006_aprobaciones.sql")
+    conn.execute("delete from acciones_pendientes")  # aislado, igual que las otras tablas de trabajo
+    conn.execute("delete from tool_niveles")
+    return conn

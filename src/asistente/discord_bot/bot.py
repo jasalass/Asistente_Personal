@@ -3,12 +3,15 @@ import contextlib
 import logging
 import socket
 from collections.abc import Awaitable, Callable
+from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import discord
 import psycopg
 from discord import app_commands
 
 from asistente.db.connection import transaccion
+from asistente.db.models import AccionPendiente
 from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.db.repos.sistema import EstadoSistemaRepo
 from asistente.discord_bot.despachador import Despachador
@@ -21,6 +24,7 @@ log = logging.getLogger(__name__)
 MSG_ERROR = "Ocurrió un error interno y no pude procesar tu mensaje. Quedó registrado."
 MSG_SIN_CONEXION = "Ahora mismo no tengo conexión con mi base de datos. Reintenta en un minuto."
 MSG_NO_AUTORIZADO = "No autorizado."
+MSG_ERROR_APROBACION = "Ocurrió un error interno al resolver esto. Quedó registrado."
 
 # Un texto del LLM jamás debe poder mencionar a nadie (@everyone, roles, usuarios).
 SIN_MENCIONES = discord.AllowedMentions.none()
@@ -56,6 +60,9 @@ Enviar = Callable[[str], Awaitable[None]]
 Latido = Callable[[Enviar], Awaitable[None]]
 Vigia = Callable[[Publicar], Awaitable[None]]
 VigiaAhora = Callable[[Publicar], Awaitable[str]]
+# (id de la acción, aprobar, id de Discord de quien decide) -> texto de confirmación. Nunca lanza.
+ResolverAprobacion = Callable[[UUID, bool, int], Awaitable[str]]
+PendientesAlArrancar = Callable[[], Awaitable[list[UUID]]]
 
 
 def crear_embed(pub: Publicacion) -> discord.Embed:
@@ -66,12 +73,73 @@ def crear_embed(pub: Publicacion) -> discord.Embed:
     return embed
 
 
+def crear_embed_propuesta(accion: AccionPendiente, tz: ZoneInfo) -> discord.Embed:
+    """Qué tool, con qué argumentos y hasta cuándo se puede aprobar."""
+    detalle = "\n".join(f"**{k}**: {v}" for k, v in accion.args.items()) or "(sin argumentos)"
+    embed = discord.Embed(
+        title=f"¿Aprobar «{accion.tool}»?", description=detalle[:4000], color=discord.Color.orange()
+    )
+    embed.set_footer(text=f"Expira el {accion.expira_en.astimezone(tz):%d/%m a las %H:%M}")
+    return embed
+
+
+class VistaAprobacion(discord.ui.View):
+    """Aprobar/Rechazar, con el id de la acción en el custom_id (no en la instancia): así sigue
+    funcionando después de un reinicio, mientras el bot vuelva a registrar las que quedaron
+    pendientes en setup_hook. Solo el owner puede pulsarlos, igual que los slash commands."""
+
+    def __init__(self, accion_id: UUID, allowlist: Allowlist, resolver: ResolverAprobacion) -> None:
+        super().__init__(timeout=None)
+        self._allowlist = allowlist
+        self._resolver = resolver
+        self._accion_id = accion_id
+
+        aprobar = discord.ui.Button(
+            label="Aprobar", style=discord.ButtonStyle.success,
+            custom_id=f"aprobacion:aprobar:{accion_id}",
+        )
+        aprobar.callback = self._callback(True)
+        rechazar = discord.ui.Button(
+            label="Rechazar", style=discord.ButtonStyle.danger,
+            custom_id=f"aprobacion:rechazar:{accion_id}",
+        )
+        rechazar.callback = self._callback(False)
+        self.add_item(aprobar)
+        self.add_item(rechazar)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        ok = self._allowlist.is_allowed(
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id or 0,
+        )
+        if not ok:
+            await interaction.response.send_message(MSG_NO_AUTORIZADO, ephemeral=True)
+        return ok
+
+    def _callback(self, aprobar: bool) -> Callable[[discord.Interaction], Awaitable[None]]:
+        async def click(interaction: discord.Interaction) -> None:
+            for item in self.children:
+                item.disabled = True  # type: ignore[attr-defined]
+            await interaction.response.edit_message(view=self)
+            try:
+                texto = await self._resolver(self._accion_id, aprobar, interaction.user.id)
+            except Exception:
+                log.exception("Error resolviendo una aprobación")
+                texto = MSG_ERROR_APROBACION
+            await interaction.followup.send(texto)
+            self.stop()
+
+        return click
+
+
 class AsistenteBot(discord.Client):
     def __init__(
         self,
         allowlist: Allowlist,
         despachador: Despachador,
         *,
+        tz: ZoneInfo,
         latido: Latido | None = None,
         canal_avisos_id: int | None = None,
         vigia: Vigia | None = None,
@@ -79,11 +147,15 @@ class AsistenteBot(discord.Client):
         canal_vigia_id: int | None = None,
         uso: Callable[[], Awaitable[str]] | None = None,
         vigilar_bloqueo: Callable[[], bool | None] | None = None,
+        resolver_aprobacion: ResolverAprobacion | None = None,
+        pendientes_al_arrancar: PendientesAlArrancar | None = None,
         host: str | None = None,
     ) -> None:
         super().__init__(intents=crear_intents(), allowed_mentions=SIN_MENCIONES)
         self._despachador = despachador
+        self._allowlist = allowlist
         self._guild = discord.Object(id=allowlist.guild_id)
+        self._tz = tz
         self._latido = latido
         self._canal_avisos_id = canal_avisos_id
         self._vigia = vigia
@@ -91,6 +163,8 @@ class AsistenteBot(discord.Client):
         self._canal_vigia_id = canal_vigia_id
         self._uso = uso
         self._vigilar_bloqueo = vigilar_bloqueo
+        self._resolver_aprobacion = resolver_aprobacion
+        self._pendientes_al_arrancar = pendientes_al_arrancar
         self._host = host or socket.gethostname()
         self._avisado_inicio = False
         self._avisado_cierre = False
@@ -98,6 +172,10 @@ class AsistenteBot(discord.Client):
         self._tareas: list[asyncio.Task[None]] = []
         self.tree = _Arbol(self, allowlist)
         self._registrar_comandos()
+
+    def _vista_aprobacion(self, accion_id: UUID) -> VistaAprobacion:
+        assert self._resolver_aprobacion is not None
+        return VistaAprobacion(accion_id, self._allowlist, self._resolver_aprobacion)
 
     async def _canal(self, canal_id: int | None) -> discord.abc.Messageable:
         if canal_id is None:
@@ -216,6 +294,11 @@ class AsistenteBot(discord.Client):
 
     async def setup_hook(self) -> None:
         await self.tree.sync(guild=self._guild)
+        if self._pendientes_al_arrancar is not None:
+            # Re-registra los botones de lo que quedó pendiente antes de un reinicio: sin esto,
+            # los mensajes viejos se ven igual pero sus botones ya no responden a nada.
+            for accion_id in await self._pendientes_al_arrancar():
+                self.add_view(self._vista_aprobacion(accion_id))
         if self._latido is not None:
             self._tareas.append(
                 asyncio.create_task(self._correr(lambda: self._latido(self.enviar_aviso)))
@@ -244,22 +327,29 @@ class AsistenteBot(discord.Client):
         # el bot no les revela ni que está escuchando.
         if not self._despachador.atiende(**datos):
             return
+        acciones_pendientes: list[AccionPendiente] = []
         try:
             async with message.channel.typing():
-                respuesta = await self._despachador.manejar(**datos, texto=message.content)
+                resultado = await self._despachador.manejar(**datos, texto=message.content)
         except psycopg.OperationalError:
             log.warning("Sin conexión a la base de datos al procesar un mensaje")
-            respuesta = MSG_SIN_CONEXION
+            texto: str | None = MSG_SIN_CONEXION
         except Exception:  # el bot no debe caerse por un mensaje
             log.exception("Error procesando un mensaje")
-            respuesta = MSG_ERROR
-        if respuesta is None:
-            return
+            texto = MSG_ERROR
+        else:
+            if resultado is None:
+                return
+            texto, acciones_pendientes = resultado.respuesta, resultado.acciones_pendientes
 
-        trozos = dividir_mensaje(respuesta) or ["Listo."]
+        trozos = dividir_mensaje(texto) or ["Listo."]
         await message.reply(trozos[0], mention_author=False)
         for trozo in trozos[1:]:
             await message.channel.send(trozo)
+        for accion in acciones_pendientes:
+            await message.channel.send(
+                embed=crear_embed_propuesta(accion, self._tz), view=self._vista_aprobacion(accion.id)
+            )
 
 
 def _leer_pausa() -> bool:

@@ -261,3 +261,4 @@ def test_el_prompt_base_ya_no_carga_las_instrucciones_del_vigia():
     prompt = construir_prompt(datetime(2026, 9, 21, 12, 0, tzinfo=UTC), TZ)
     assert "Skill: agenda" in prompt and "Skill: procesos" in prompt
     assert "Skill: vigía de temas" not in prompt
+    assert "Skill: niveles de autoridad" not in prompt

@@ -158,6 +158,41 @@ def test_chequeo_periodico_y_su_registro(conn):
     assert recolectar(conn, ahora, TZ) == []
 
 
+# ---------- acciones pendientes vencidas ----------
+
+
+def test_una_accion_vencida_avisa_y_se_cierra(conn):
+    from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
+
+    acciones = AccionesPendientesRepo(conn)
+    fila = acciones.crear("enviar_email", {"a": "b@c.cl"}, "h")
+    conn.execute(
+        "update acciones_pendientes set expira_en = %s where id = %s",
+        (AHORA - timedelta(hours=1), fila.id),
+    )
+
+    assert recolectar(conn, AHORA - timedelta(hours=2), TZ) == []  # todavía no vence
+    (aviso,) = recolectar(conn, AHORA, TZ)
+    assert "enviar_email" in aviso.texto and "expiró" in aviso.texto
+
+    enviar_como_el_runner(conn, aviso)
+    assert acciones.obtener(fila.id).estado == "expirada"
+    assert recolectar(conn, AHORA, TZ) == []  # no se repite
+
+
+def test_una_accion_ya_resuelta_no_genera_aviso_de_vencimiento(conn):
+    from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
+
+    acciones = AccionesPendientesRepo(conn)
+    fila = acciones.crear("enviar_email", {}, "h")
+    acciones.marcar_rechazada(fila.id, "123")
+    conn.execute(
+        "update acciones_pendientes set expira_en = %s where id = %s",
+        (AHORA - timedelta(hours=1), fila.id),
+    )
+    assert recolectar(conn, AHORA, TZ) == []
+
+
 # ---------- ciclo completo (envío + confirmación) ----------
 
 

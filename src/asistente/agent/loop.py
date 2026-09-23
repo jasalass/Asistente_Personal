@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import ValidationError
 
+from asistente.db.models import AccionPendiente
 from asistente.db.repos.auditoria import AuditoriaRepo
 from asistente.llm.base import LLM, LLMNoDisponible, ToolCall, ToolCallRechazado
 from asistente.security.tool_registry import (
@@ -24,6 +25,13 @@ class Trazas(Protocol):
     def disponible(self) -> bool: ...
     def registrar_paso(self, traza_id: UUID, orden: int, tipo: str, nombre: str, **kw: Any) -> None: ...
 
+
+class Acciones(Protocol):
+    """Lo que necesita el bucle para persistir una propuesta: real (AccionesPendientesRepo) o de
+    prueba. Sin esto, una propuesta se informa al modelo pero no queda nada para aprobar en Discord."""
+
+    def crear(self, tool: str, args: dict[str, Any], payload_hash: str) -> AccionPendiente: ...
+
 MSG_SIN_RESPUESTA = "No logré completar la tarea en el número de pasos permitido. Intenta de nuevo."
 MSG_HECHO_SIN_RESPUESTA = (
     "Alcancé a hacer esto, pero no pude redactar la respuesta completa "
@@ -38,6 +46,7 @@ _SOLO_LECTURA = ("listar_", "ver_", "buscar_", "habilitar_")
 class ResultadoAgente:
     respuesta: str
     propuestas: list[Proposal] = field(default_factory=list)
+    acciones_pendientes: list[AccionPendiente] = field(default_factory=list)  # persistidas, para Discord
     tokens_in: int = 0
     tokens_out: int = 0
     pasos: int = 0
@@ -94,6 +103,7 @@ def ejecutar_agente(
     historial: Sequence[dict[str, Any]] = (),
     max_pasos: int = 6,
     trazas: Trazas | None = None,
+    acciones: Acciones | None = None,
 ) -> ResultadoAgente:
     """Bucle de tool calling. El tope de pasos evita ciclos y gasto de cuota descontrolado."""
     messages: list[dict[str, Any]] = [
@@ -168,7 +178,7 @@ def ejecutar_agente(
             }
         )
         for tc in r.tool_calls:
-            salida = _ejecutar_tool(tc, registro, auditoria, resultado, trazador)
+            salida = _ejecutar_tool(tc, registro, auditoria, resultado, trazador, acciones)
             messages.append(
                 {
                     "role": "tool",
@@ -182,7 +192,7 @@ def ejecutar_agente(
 
 def _ejecutar_tool(
     tc: ToolCall, registro: ToolRegistry, auditoria: AuditoriaRepo, resultado: ResultadoAgente,
-    trazador: _Trazador,
+    trazador: _Trazador, acciones: Acciones | None,
 ) -> Any:
     """Nunca lanza: todo fallo se devuelve al modelo como {"error": ...} para que se corrija."""
     t0 = time.monotonic()
@@ -217,9 +227,19 @@ def _ejecutar_tool(
 
     if isinstance(salida, Proposal):
         resultado.propuestas.append(salida)
-        auditoria.registrar("agente", f"tool:{tc.name}", {"estado": "propuesta", "args": args})
+        detalle_auditoria: dict[str, Any] = {"estado": "propuesta", "args": args}
+        if acciones is not None:
+            fila = acciones.crear(salida.tool, salida.args, salida.hash)
+            resultado.acciones_pendientes.append(fila)
+            detalle_auditoria["id"] = str(fila.id)
+        auditoria.registrar("agente", f"tool:{tc.name}", detalle_auditoria)
         paso({"estado": "propuesta"}, None, entrada=args)
-        return {"estado": "pendiente_de_aprobacion", "mensaje": "El usuario debe aprobarla."}
+        mensaje = (
+            "Quedó a la espera de tu aprobación en Discord (Aprobar/Rechazar); no se ejecutó."
+            if acciones is not None
+            else "El usuario debe aprobarla."
+        )
+        return {"estado": "pendiente_de_aprobacion", "mensaje": mensaje}
 
     auditoria.registrar("agente", f"tool:{tc.name}", {"estado": "ok", "args": args})
     paso(salida, None, entrada=args)

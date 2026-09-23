@@ -23,9 +23,10 @@ TZ = ZoneInfo("America/Santiago")
 
 
 def registro_completo():
-    """Con el grupo del vigía activado: así se revisan los esquemas de todas las tools."""
+    """Con los grupos bajo demanda activados: así se revisan los esquemas de todas las tools."""
     reg = construir_registro(None, TZ)
     reg.activar_grupo("vigia")
+    reg.activar_grupo("autoridad")
     return reg
 
 

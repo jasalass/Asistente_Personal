@@ -166,3 +166,90 @@ def test_llm_caido_responde_con_gracia_y_lo_registra(conn):
     assert res.respuesta == MSG_LLM_CAIDO
     ejec = conn.execute("select error from ejecuciones order by id desc limit 1").fetchone()
     assert ejec["error"] == "Groq no responde"
+
+
+# ---------- resolver_aprobacion: el botón Aprobar/Rechazar de Discord ----------
+
+
+def _proponer_cancelar(conn, texto_recordatorio: str):
+    """Vuelve 'propone' esa tool solo para esta prueba, crea el recordatorio y devuelve la
+    AccionPendiente que quedaría esperando en Discord."""
+    from asistente.agent.tools import construir_registro
+    from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
+    from asistente.db.repos.recordatorios import RecordatorioRepo
+    from asistente.db.repos.tool_niveles import NivelesRepo
+
+    RecordatorioRepo(conn).crear(texto_recordatorio, AHORA)
+    NivelesRepo(conn).fijar("cancelar_recordatorio", "propone")
+    registro = construir_registro(conn, TZ, AHORA)
+    propuesta = registro.invoke("cancelar_recordatorio", {"recordatorio": texto_recordatorio})
+    return AccionesPendientesRepo(conn).crear(propuesta.tool, propuesta.args, propuesta.hash)
+
+
+def test_aprobar_ejecuta_la_tool_de_verdad(conn_aprobaciones):
+    from asistente.agent.service import resolver_aprobacion
+    from asistente.db.repos.recordatorios import RecordatorioRepo
+
+    fila = _proponer_cancelar(conn_aprobaciones, "llamar al banco")
+    texto = resolver_aprobacion(conn_aprobaciones, fila.id, aprobar=True, resuelto_por="123", tz=TZ)
+    assert texto.startswith("Aprobado")
+    assert RecordatorioRepo(conn_aprobaciones).buscar_por_texto("banco") == []  # de verdad se canceló
+
+
+def test_rechazar_no_ejecuta_nada(conn_aprobaciones):
+    from asistente.agent.service import resolver_aprobacion
+    from asistente.db.repos.recordatorios import RecordatorioRepo
+
+    fila = _proponer_cancelar(conn_aprobaciones, "llamar al banco")
+    texto = resolver_aprobacion(conn_aprobaciones, fila.id, aprobar=False, resuelto_por="123", tz=TZ)
+    assert "Rechacé" in texto
+    assert len(RecordatorioRepo(conn_aprobaciones).buscar_por_texto("banco")) == 1  # sigue ahí
+
+
+def test_una_accion_ya_resuelta_no_se_puede_resolver_de_nuevo(conn_aprobaciones):
+    from asistente.agent.service import resolver_aprobacion
+
+    fila = _proponer_cancelar(conn_aprobaciones, "llamar al banco")
+    resolver_aprobacion(conn_aprobaciones, fila.id, aprobar=True, resuelto_por="123", tz=TZ)
+    texto = resolver_aprobacion(conn_aprobaciones, fila.id, aprobar=False, resuelto_por="999", tz=TZ)
+    assert "ya estaba resuelta" in texto
+
+
+def test_una_accion_inexistente_se_informa_sin_lanzar(conn_aprobaciones):
+    import uuid
+
+    from asistente.agent.service import resolver_aprobacion
+
+    texto = resolver_aprobacion(conn_aprobaciones, uuid.uuid4(), aprobar=True, resuelto_por="1", tz=TZ)
+    assert "No encontré" in texto
+
+
+def test_una_accion_vencida_se_marca_expirada_y_no_se_ejecuta(conn_aprobaciones):
+    from datetime import timedelta
+
+    from asistente.agent.service import resolver_aprobacion
+
+    fila = _proponer_cancelar(conn_aprobaciones, "llamar al banco")
+    conn_aprobaciones.execute(
+        "update acciones_pendientes set expira_en = %s where id = %s",
+        (AHORA - timedelta(hours=1), fila.id),
+    )
+    texto = resolver_aprobacion(conn_aprobaciones, fila.id, aprobar=True, resuelto_por="1", tz=TZ)
+    assert "expiró" in texto
+    from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
+    assert AccionesPendientesRepo(conn_aprobaciones).obtener(fila.id).estado == "expirada"
+
+
+def test_si_la_tool_falla_al_aprobar_queda_registrado_sin_romper(conn_aprobaciones):
+    from asistente.agent.service import resolver_aprobacion
+    from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
+    from asistente.db.repos.recordatorios import RecordatorioRepo
+
+    fila = _proponer_cancelar(conn_aprobaciones, "llamar al banco")
+    # Se cancela por otra vía antes de que el dueño alcance a aprobar: al ejecutarse, ya no existe.
+    (r,) = RecordatorioRepo(conn_aprobaciones).buscar_por_texto("banco")
+    RecordatorioRepo(conn_aprobaciones).eliminar(r.id)
+
+    texto = resolver_aprobacion(conn_aprobaciones, fila.id, aprobar=True, resuelto_por="1", tz=TZ)
+    assert "falló al ejecutarse" in texto
+    assert AccionesPendientesRepo(conn_aprobaciones).obtener(fila.id).estado == "aprobada"

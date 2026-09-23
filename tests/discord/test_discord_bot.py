@@ -24,9 +24,14 @@ def manejar(desp, **kw):
     return asyncio.run(desp.manejar(**{**datos, **kw}))
 
 
+def texto_de(desp, **kw):
+    resultado = manejar(desp, **kw)
+    return resultado.respuesta if resultado else None
+
+
 def test_owner_en_canal_permitido_recibe_respuesta():
     r = ResponderFalso(respuesta="hola!")
-    assert manejar(Despachador(ALLOW, r)) == "hola!"
+    assert texto_de(Despachador(ALLOW, r)) == "hola!"
     assert r.llamadas[0][0] == "hola"
 
 

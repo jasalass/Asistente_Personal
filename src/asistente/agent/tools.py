@@ -1,11 +1,14 @@
-"""Tools del agente. Todas son nivel AUTO: solo leen y escriben en la base propia.
+"""Tools del agente. Registradas en AUTO: solo leen y escriben en la base propia.
 
-Nada acá contacta a terceros ni gasta dinero; eso, cuando exista, se registra como PROPONE.
+Nada acá contacta a terceros ni gasta dinero; eso, cuando exista, se registra como PROPONE. El
+dueño puede además volver más estricta (o más laxa) cualquier tool desde el chat, con
+`configurar_nivel_tool` (ver ToolRegistry.aplicar_overrides): ese ajuste nunca alcanza a una tool
+prohibida por el código, que es siempre el techo.
 """
 
 import unicodedata
 from datetime import date, datetime, time, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -43,6 +46,7 @@ from asistente.db.repos.memorias import MemoriaRepo
 from asistente.db.repos.procesos import ProcesoRepo
 from asistente.db.repos.recordatorios import RecordatorioRepo
 from asistente.db.repos.temas import TemaRepo
+from asistente.db.repos.tool_niveles import NivelesRepo
 from asistente.procesos.redaccion import describir_proceso
 from asistente.security.tool_registry import Level, ToolError, ToolRegistry, ToolSpec
 
@@ -50,6 +54,9 @@ _CERRADOS = (ProcesoEstado.COMPLETADO, ProcesoEstado.CANCELADO)
 
 GRUPO_VIGIA = "vigia"
 _TOOLS_DEL_VIGIA = frozenset({"listar_temas", "crear_tema", "actualizar_tema"})
+
+GRUPO_AUTORIDAD = "autoridad"
+_TOOLS_DE_AUTORIDAD = frozenset({"listar_niveles_tool", "configurar_nivel_tool"})
 
 
 def leer_skill(nombre: str) -> str:
@@ -182,6 +189,16 @@ class ActualizarTemaArgs(_RefTema, TemaActualizacion):
     hora_preferida: HoraLocal | None = None  # type: ignore[assignment]
 
 
+class ConfigurarNivelArgs(_SinNulos):
+    tool: str = Field(min_length=1, description="Nombre exacto de la herramienta (ver listar_niveles_tool)")
+    nivel: Literal["auto", "propone", "predeterminado"] = Field(
+        description=(
+            "'auto' = se ejecuta sola; 'propone' = pide aprobación en Discord antes; "
+            "'predeterminado' = vuelve al nivel que trae el código"
+        )
+    )
+
+
 class CrearRecordatorioArgs(_SinNulos):
     texto: str = Field(min_length=1, max_length=500)
     fecha: FechaHoraLocal
@@ -304,6 +321,7 @@ def construir_registro(
     """Registro con todas las tools atadas a una conexión (una unidad de trabajo)."""
     procesos, memorias, recordatorios = ProcesoRepo(conn), MemoriaRepo(conn), RecordatorioRepo(conn)
     temas, eventos = TemaRepo(conn), EventoRepo(conn)
+    niveles_repo = NivelesRepo(conn)
     feriados = feriados or Feriados()
 
     def hoy() -> date:
@@ -604,6 +622,33 @@ def construir_registro(
         habilitadas = registro.activar_grupo(GRUPO_VIGIA)
         return {"habilitadas": habilitadas, "instrucciones": leer_skill("vigia")}
 
+    def habilitar_configuracion_de_niveles():
+        """Igual que habilitar_vigia: esto solo se carga si el dueño toca el tema."""
+        habilitadas = registro.activar_grupo(GRUPO_AUTORIDAD)
+        return {"habilitadas": habilitadas, "instrucciones": leer_skill("aprobaciones")}
+
+    def listar_niveles_tool():
+        return {nombre: nivel.value for nombre, nivel in sorted(registro.niveles().items())}
+
+    def configurar_nivel_tool(tool, nivel):
+        if not niveles_repo.disponible():
+            raise ToolError(
+                "Configurar niveles aún no está disponible: falta aplicar la migración "
+                "0006_aprobaciones.sql."
+            )
+        spec = registro.spec_de(tool)
+        if spec is None:
+            raise ToolError(f"No existe una tool llamada '{tool}'. Usa listar_niveles_tool.")
+        if spec.level is Level.PROHIBIDO:
+            raise ToolError(f"'{tool}' está prohibida por el sistema: eso no se cambia desde el chat.")
+        if nivel == "predeterminado":
+            niveles_repo.quitar(tool)
+            registro.quitar_override(tool)
+        else:
+            niveles_repo.fijar(tool, nivel)
+            registro.aplicar_overrides({tool: Level(nivel)})
+        return {"tool": tool, "nivel": registro.spec_de(tool).level.value}
+
     registro = ToolRegistry()
     for nombre, descripcion, handler, params in [
         (
@@ -714,7 +759,43 @@ def construir_registro(
             actualizar_tema,
             ActualizarTemaArgs,
         ),
+        (
+            "habilitar_configuracion_de_niveles",
+            (
+                "Habilita ver y cambiar qué herramientas se ejecutan solas ('auto') y cuáles piden "
+                "aprobación en Discord ('propone'). Llámala antes si el dueño toca este tema."
+            ),
+            habilitar_configuracion_de_niveles,
+            None,
+        ),
+        (
+            "listar_niveles_tool",
+            "Muestra el nivel actual (auto/propone) de cada herramienta.",
+            listar_niveles_tool,
+            None,
+        ),
+        (
+            "configurar_nivel_tool",
+            (
+                "Cambia si una herramienta se ejecuta sola ('auto') o pide aprobación en Discord "
+                "primero ('propone'). 'predeterminado' vuelve al nivel original. No se puede tocar "
+                "una herramienta prohibida por el sistema."
+            ),
+            configurar_nivel_tool,
+            ConfigurarNivelArgs,
+        ),
     ]:
-        grupo = GRUPO_VIGIA if nombre in _TOOLS_DEL_VIGIA else None
+        if nombre in _TOOLS_DEL_VIGIA:
+            grupo = GRUPO_VIGIA
+        elif nombre in _TOOLS_DE_AUTORIDAD:
+            grupo = GRUPO_AUTORIDAD
+        else:
+            grupo = None
         registro.register(ToolSpec(nombre, Level.AUTO, descripcion, handler, params, grupo))
+
+    # conn=None es un modo especial solo para inspeccionar esquemas en tests: sin base, no hay
+    # overrides que cargar (igual que si faltara la migración 0006_aprobaciones.sql).
+    if conn is not None and niveles_repo.disponible():
+        overrides = {t: Level(n) for t, n in niveles_repo.obtener_todos().items()}
+        registro.aplicar_overrides(overrides)
     return registro

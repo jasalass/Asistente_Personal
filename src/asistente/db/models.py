@@ -34,6 +34,14 @@ class MemoriaOrigen(StrEnum):
     EXTERNO = "externo"
 
 
+class AccionEstado(StrEnum):
+    PENDIENTE = "pendiente"
+    APROBADA = "aprobada"
+    RECHAZADA = "rechazada"
+    EXPIRADA = "expirada"
+    EJECUTADA = "ejecutada"
+
+
 class ProcesoNuevo(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -234,3 +242,18 @@ class Recordatorio(BaseModel):
     fecha: datetime
     enviado: bool
     creado_en: datetime
+
+
+class AccionPendiente(BaseModel):
+    """Una tool de nivel `propone`, guardada en vez de ejecutada: espera Aprobar/Rechazar en Discord."""
+
+    id: UUID
+    tool: str
+    args: dict
+    payload_hash: str
+    estado: AccionEstado
+    creada_en: datetime
+    expira_en: datetime
+    resuelta_en: datetime | None
+    resuelto_por: str | None
+    resultado: dict | None

@@ -1,15 +1,17 @@
 import asyncio
+from zoneinfo import ZoneInfo
 
 import discord
 import psycopg
 import pytest
 
 from asistente.agent.loop import ResultadoAgente
-from asistente.discord_bot.bot import MSG_ERROR, MSG_SIN_CONEXION, AsistenteBot
+from asistente.discord_bot.bot import MSG_ERROR, MSG_NO_AUTORIZADO, MSG_SIN_CONEXION, AsistenteBot
 from asistente.discord_bot.despachador import Despachador
 from asistente.security.allowlist import Allowlist
 
 ALLOW = Allowlist(owner_id=1, guild_id=2, channel_ids=frozenset({3}))
+TZ = ZoneInfo("America/Santiago")
 
 
 async def _responder(texto, historial):
@@ -19,7 +21,7 @@ async def _responder(texto, historial):
 def hacer_bot(monkeypatch, *, canal_avisos=3, vigilar=None, avisos=None, falla_al_enviar=False):
     """Bot sin conexión real: `enviar_aviso` y `Client.close` quedan simulados."""
     bot = AsistenteBot(
-        ALLOW, Despachador(ALLOW, _responder), canal_avisos_id=canal_avisos,
+        ALLOW, Despachador(ALLOW, _responder), tz=TZ, canal_avisos_id=canal_avisos,
         vigilar_bloqueo=vigilar, host="mi-servidor",
     )
     enviados = avisos if avisos is not None else []
@@ -172,11 +174,21 @@ class _Escribiendo:
 class _Canal:
     id = 3
 
+    def __init__(self):
+        self.enviados: list[str] = []
+        self.embeds: list = []
+        self.vistas: list = []
+
     def typing(self):
         return _Escribiendo()
 
-    async def send(self, texto):
-        self.enviados = getattr(self, "enviados", []) + [texto]
+    async def send(self, texto=None, *, embed=None, view=None):
+        if texto is not None:
+            self.enviados.append(texto)
+        if embed is not None:
+            self.embeds.append(embed)
+        if view is not None:
+            self.vistas.append(view)
 
 
 class _Mensaje:
@@ -197,7 +209,7 @@ def bot_con_responder_que_falla(monkeypatch, error):
     async def responder(texto, historial):
         raise error
 
-    bot = AsistenteBot(ALLOW, Despachador(ALLOW, responder), host="mi-servidor")
+    bot = AsistenteBot(ALLOW, Despachador(ALLOW, responder), tz=TZ, host="mi-servidor")
     return bot
 
 
@@ -246,3 +258,159 @@ def test_mientras_el_bloqueo_siga_vigente_no_se_detiene(monkeypatch):
 
     asyncio.run(escenario())
     assert len(llamadas) >= 3 and bot.bloqueo_perdido is False and enviados == []
+
+
+# ---------- aprobaciones: embed + botones en el mensaje, y la vista misma ----------
+
+
+def _accion(**kw):
+    import uuid
+    from datetime import UTC, datetime
+
+    from asistente.db.models import AccionEstado, AccionPendiente
+
+    base = {
+        "id": uuid.uuid4(), "tool": "enviar_email", "args": {"a": "b@c.cl"}, "payload_hash": "h",
+        "estado": AccionEstado.PENDIENTE, "creada_en": datetime(2026, 1, 1, tzinfo=UTC),
+        "expira_en": datetime(2026, 1, 2, 15, 0, tzinfo=UTC), "resuelta_en": None,
+        "resuelto_por": None, "resultado": None,
+    }
+    return AccionPendiente(**{**base, **kw})
+
+
+def test_crear_embed_propuesta_muestra_la_tool_y_los_argumentos():
+    from asistente.discord_bot.bot import crear_embed_propuesta
+
+    embed = crear_embed_propuesta(_accion(), TZ)
+    assert "enviar_email" in embed.title
+    assert "b@c.cl" in embed.description
+
+
+def test_on_message_manda_un_embed_y_una_vista_por_cada_propuesta():
+    accion = _accion()
+
+    async def responder(texto, historial):
+        return ResultadoAgente(respuesta="Espero tu OK.", pasos=1, acciones_pendientes=[accion])
+
+    async def resolver(accion_id, aprobar, resuelto_por):
+        return "ok"
+
+    bot = AsistenteBot(
+        ALLOW, Despachador(ALLOW, responder), tz=TZ, resolver_aprobacion=resolver, host="x",
+    )
+    msg = _Mensaje()
+    asyncio.run(bot.on_message(msg))
+    assert msg.respuestas == ["Espero tu OK."]
+    assert len(msg.channel.embeds) == 1 and "enviar_email" in msg.channel.embeds[0].title
+    assert len(msg.channel.vistas) == 1
+
+
+class _Respuesta:
+    def __init__(self):
+        self.mensajes: list[tuple[str, bool]] = []
+        self.edits: list[dict] = []
+
+    async def send_message(self, texto, ephemeral=False):
+        self.mensajes.append((texto, ephemeral))
+
+    async def edit_message(self, **kw):
+        self.edits.append(kw)
+
+
+class _Followup:
+    def __init__(self):
+        self.enviados: list[str] = []
+
+    async def send(self, texto, **kw):
+        self.enviados.append(texto)
+
+
+class _Interaccion:
+    def __init__(self, user_id, guild_id=2, channel_id=3):
+        from types import SimpleNamespace
+
+        self.user = SimpleNamespace(id=user_id)
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.response = _Respuesta()
+        self.followup = _Followup()
+
+
+def test_solo_el_owner_puede_usar_los_botones():
+    from asistente.discord_bot.bot import VistaAprobacion
+
+    async def resolver(accion_id, aprobar, resuelto_por):
+        raise AssertionError("no debería llamarse: el que hizo clic no es el owner")
+
+    vista = VistaAprobacion(_accion().id, ALLOW, resolver)
+    interaccion = _Interaccion(user_id=999)
+    ok = asyncio.run(vista.interaction_check(interaccion))
+    assert ok is False
+    assert interaccion.response.mensajes == [(MSG_NO_AUTORIZADO, True)]
+
+
+def test_aprobar_deshabilita_los_botones_y_llama_al_resolver():
+    from asistente.discord_bot.bot import VistaAprobacion
+
+    llamadas = []
+
+    async def resolver(accion_id, aprobar, resuelto_por):
+        llamadas.append((accion_id, aprobar, resuelto_por))
+        return "Aprobado."
+
+    aid = _accion().id
+    vista = VistaAprobacion(aid, ALLOW, resolver)
+    interaccion = _Interaccion(user_id=1)  # el owner de ALLOW
+    asyncio.run(vista.children[0].callback(interaccion))  # "Aprobar"
+
+    assert llamadas == [(aid, True, 1)]
+    assert all(item.disabled for item in vista.children)
+    assert interaccion.followup.enviados == ["Aprobado."]
+
+
+def test_rechazar_llama_al_resolver_con_aprobar_false():
+    from asistente.discord_bot.bot import VistaAprobacion
+
+    llamadas = []
+
+    async def resolver(accion_id, aprobar, resuelto_por):
+        llamadas.append(aprobar)
+        return "Rechacé."
+
+    vista = VistaAprobacion(_accion().id, ALLOW, resolver)
+    asyncio.run(vista.children[1].callback(_Interaccion(user_id=1)))  # "Rechazar"
+    assert llamadas == [False]
+
+
+def test_un_error_al_resolver_no_rompe_y_se_avisa():
+    from asistente.discord_bot.bot import MSG_ERROR_APROBACION, VistaAprobacion
+
+    async def resolver(accion_id, aprobar, resuelto_por):
+        raise RuntimeError("boom")
+
+    vista = VistaAprobacion(_accion().id, ALLOW, resolver)
+    interaccion = _Interaccion(user_id=1)
+    asyncio.run(vista.children[0].callback(interaccion))
+    assert interaccion.followup.enviados == [MSG_ERROR_APROBACION]
+
+
+def test_setup_hook_re_registra_los_botones_de_lo_pendiente(monkeypatch):
+    import uuid
+
+    pendientes = [uuid.uuid4(), uuid.uuid4()]
+
+    async def pendientes_al_arrancar():
+        return pendientes
+
+    async def resolver(accion_id, aprobar, resuelto_por):
+        return "ok"
+
+    bot = AsistenteBot(
+        ALLOW, Despachador(ALLOW, _responder), tz=TZ, resolver_aprobacion=resolver,
+        pendientes_al_arrancar=pendientes_al_arrancar, host="x",
+    )
+    registradas = []
+    monkeypatch.setattr(bot, "add_view", lambda vista: registradas.append(vista))
+    monkeypatch.setattr(bot.tree, "sync", lambda **kw: asyncio.sleep(0))
+    asyncio.run(bot.setup_hook())
+    assert len(registradas) == 2

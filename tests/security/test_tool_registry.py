@@ -141,3 +141,68 @@ def test_compactar_schema_inlinea_defs_quita_ruido_y_conserva_propiedades():
 
 def test_hash_es_estable_ante_orden_de_claves():
     assert payload_hash("t", {"a": 1, "b": 2}) == payload_hash("t", {"b": 2, "a": 1})
+
+
+# ---------- niveles configurables por el dueño ----------
+
+
+def test_un_override_cambia_el_nivel_efectivo():
+    reg = make_registry([])
+    reg.aplicar_overrides({"enviar_email": Level.AUTO})
+    assert reg.spec_de("enviar_email").level is Level.AUTO
+
+
+def test_un_override_puede_ir_en_cualquier_direccion():
+    reg = make_registry([])
+    reg.aplicar_overrides({"leer": Level.PROPONE})
+    assert reg.spec_de("leer").level is Level.PROPONE
+
+
+def test_una_tool_prohibida_nunca_cambia_por_override():
+    reg = make_registry([])
+    reg.aplicar_overrides({"pagar": Level.AUTO})
+    assert reg.spec_de("pagar").level is Level.PROHIBIDO
+
+
+def test_nunca_se_puede_poner_una_tool_en_prohibido_por_override():
+    reg = make_registry([])
+    reg.aplicar_overrides({"leer": Level.PROHIBIDO})
+    assert reg.spec_de("leer").level is Level.AUTO
+
+
+def test_un_override_de_una_tool_inexistente_se_ignora():
+    reg = make_registry([])
+    reg.aplicar_overrides({"no_existe": Level.AUTO})  # no debe lanzar
+    assert reg.spec_de("no_existe") is None
+
+
+def test_spec_de_no_respeta_visibilidad_de_grupo():
+    reg = ToolRegistry()
+    reg.register(ToolSpec("oculta", Level.AUTO, "oculta", lambda: None, grupo="g"))
+    assert reg.spec_de("oculta") is not None  # a diferencia de get(), que la denegaría
+    with pytest.raises(ToolDenied):
+        reg.get("oculta")
+
+
+def test_quitar_override_vuelve_al_nivel_del_codigo():
+    reg = make_registry([])
+    reg.aplicar_overrides({"leer": Level.PROPONE})
+    reg.quitar_override("leer")
+    assert reg.spec_de("leer").level is Level.AUTO
+
+
+def test_un_segundo_override_se_compara_contra_el_original_no_el_actual():
+    reg = make_registry([])
+    reg.aplicar_overrides({"leer": Level.PROPONE})
+    reg.aplicar_overrides({"leer": Level.PROHIBIDO})  # se ignora igual, aunque ya no esté en AUTO
+    assert reg.spec_de("leer").level is Level.PROPONE
+
+
+def test_niveles_excluye_prohibidas_e_invisibles_por_grupo():
+    reg = ToolRegistry()
+    reg.register(ToolSpec("a", Level.AUTO, "a", lambda: None))
+    reg.register(ToolSpec("p", Level.PROHIBIDO, "p", lambda: None))
+    reg.register(ToolSpec("g", Level.AUTO, "g", lambda: None, grupo="x"))
+    assert reg.niveles() == {"a": Level.AUTO}
+    reg.activar_grupo("x")
+    assert reg.niveles() == {"a": Level.AUTO, "g": Level.AUTO}

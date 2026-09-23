@@ -200,4 +200,5 @@ def test_el_esquema_para_el_llm_incluye_todas_las_tools(reg):
         "crear_proceso", "actualizar_proceso",
         "agregar_nota_proceso", "ver_historial_proceso", "guardar_memoria",
         "buscar_memorias", "crear_recordatorio", "cancelar_recordatorio",
+        "habilitar_configuracion_de_niveles",
     }

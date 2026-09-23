@@ -27,8 +27,14 @@ de un solo usuario, inspirado en la arquitectura de [OpenClaw](https://github.co
 | Nivel | Qué puede hacer |
 |---|---|
 | `auto` | Leer, resumir, clasificar, recordar, investigar |
-| `propone` | Enviar emails, mover o cancelar eventos: espera tu OK explícito |
-| `prohibido` | Gastar dinero, comunicarse con terceros sin revisión previa |
+| `propone` | Queda pendiente y espera tu Aprobar/Rechazar en Discord antes de ejecutarse |
+| `prohibido` | Nunca se ejecuta, pase lo que pase (gastar dinero, contactar terceros sin revisión) |
+
+Hoy todas las tools nacen en `auto` (todo queda dentro de tu propia base, con auditoría). El nivel
+de cualquiera (menos las prohibidas) se puede subir o bajar **desde el chat**, sin tocar código:
+"que cancelar un recordatorio pida mi aprobación antes" (`configurar_nivel_tool`). El código
+siempre es el techo: una tool prohibida no se puede volver `auto` ni `propone` por configuración,
+solo con un despliegue nuevo. Ver "Aprobaciones" más abajo.
 
 ## Seguridad
 
@@ -82,6 +88,11 @@ pip install -e ".[dev]"
      temas; sin ella el vigía queda desactivado y lo avisa en el log al arrancar)
    - [`supabase/migrations/0004_agenda.sql`](supabase/migrations/0004_agenda.sql) (eventos recurrentes
      y sus excepciones por fecha)
+   - [`supabase/migrations/0005_trazas.sql`](supabase/migrations/0005_trazas.sql) (traza paso a paso
+     del agente; sin ella se sigue funcionando, solo sin ese detalle para depurar)
+   - [`supabase/migrations/0006_aprobaciones.sql`](supabase/migrations/0006_aprobaciones.sql) (niveles
+     de autoridad configurables y persistencia de `acciones_pendientes`; sin ella, `configurar_nivel_tool`
+     avisa que falta aplicarla)
 3. Ejecuta aparte, con una contraseña larga y aleatoria (no se guarda en el repo):
    ```sql
    alter role asistente_bot with password 'TU_CONTRASEÑA';
@@ -233,6 +244,27 @@ ordenados por hora y con los feriados marcados.
 - Límites: los feriados son los legales; no incluyen decretos de última hora ni los recesos de tu
   universidad o trabajo, para eso están las excepciones. Los eventos se pausan (`activo: false`), no se borran.
 
+### Aprobaciones: qué se ejecuta solo y qué espera tu OK
+
+Cualquier tool en nivel `propone` no se ejecuta al tiro: queda guardada en `acciones_pendientes` y
+en el chat aparece un mensaje con botones **Aprobar** / **Rechazar**. Nada pasa hasta que tocas uno.
+
+- **Configurable desde el chat, sin tocar código:** "que cancelar un recordatorio pida mi aprobación
+  antes" cambia esa tool a `propone`; "que vuelva a ser automática" la regresa a como estaba. Pídele
+  "qué herramientas piden aprobación" para ver el estado de todas. Una tool `prohibido` por el
+  código nunca se puede subir de nivel desde el chat: ese techo solo lo cambia un despliegue nuevo.
+- **Los botones sobreviven a un reinicio:** el id de la acción viaja en el botón mismo, no en la
+  memoria del proceso; al arrancar, el bot vuelve a registrar los botones de todo lo que seguía
+  pendiente. Solo tú puedes usarlos (misma allowlist que los slash commands).
+- **Vence en 24 h.** Si no la apruebas ni la rechazas a tiempo, el heartbeat la cierra sola y te
+  avisa que ya no se puede ejecutar — no queda un botón vivo esperando para siempre.
+- **Doble clic o dos personas aprobando a la vez no ejecuta dos veces:** solo la primera resolución
+  cuenta; la segunda se informa como "ya estaba resuelta" y no hace nada.
+- Si al aprobar la tool falla igual (por ejemplo, lo que iba a cancelar ya no existe), queda
+  registrado como "aprobada, con error" en vez de reintentar solo o quedar pendiente de nuevo.
+- Hoy ninguna tool nace en `propone`: es infraestructura lista para cuando lleguen acciones que
+  sí ameriten pedir permiso (enviar un correo, tocar un calendario externo, Fase 2).
+
 ### Instancia única y avisos de estado
 
 Solo **un** proceso del asistente puede estar activo a la vez (un bloqueo de sesión en Postgres). Si
@@ -285,9 +317,10 @@ para unas 25 a 35 conversaciones al día.
 - Menos llamadas por mensaje: los procesos y temas se indican por **nombre** (sin buscar antes), las
   tools detectan duplicados por su cuenta y `actualizar_proceso` acepta una `nota` en la misma llamada.
 - El vigía usa el modelo chico y deja registrados sus tokens en cada corrida.
-- **Herramientas bajo demanda:** las del vigía (y sus instrucciones) no viajan en cada llamada al
-  modelo: `habilitar_vigia` las carga solo cuando hablas de temas. Ahorra ~4.000 caracteres fijos por
-  llamada a costa de una llamada extra cuando las necesitas.
+- **Herramientas bajo demanda:** las del vigía y las de configurar niveles de autoridad (y sus
+  instrucciones) no viajan en cada llamada al modelo: `habilitar_vigia` / `habilitar_configuracion_de_niveles`
+  las cargan solo cuando hace falta. Ahorra caracteres fijos por llamada a costa de una llamada
+  extra cuando las necesitas.
 
 ### Vigía de temas
 
@@ -346,7 +379,7 @@ vigía publica en `#vigia-temas` un embed por artículo: **título, resumen y li
 - [x] Repositorios de datos (procesos, memorias, recordatorios, auditoría, kill switch)
 - [x] Capa del LLM (Groq) y tools del agente registradas con su nivel de autoridad
 - [x] Bot de Discord con allowlist, memoria conversacional en RAM y `/pausa` `/reanudar` `/estado`
-- [ ] Persistencia de aprobaciones (`acciones_pendientes`) y botones Aprobar/Rechazar en Discord
+- [x] Persistencia de aprobaciones (`acciones_pendientes`) y botones Aprobar/Rechazar en Discord
 - [x] Heartbeat: chequeo proactivo de procesos y recordatorios
 - [x] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
 - [x] Agenda: eventos recurrentes con feriados, excepciones por fecha, `listar_agenda` y avisos previos

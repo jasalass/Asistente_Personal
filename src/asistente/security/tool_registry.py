@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -90,11 +90,13 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
         self._grupos_activos: set[str] = set()
+        self._niveles_originales: dict[str, Level] = {}  # el nivel del código, nunca se pisa
 
     def register(self, spec: ToolSpec) -> None:
         if spec.name in self._tools:
             raise ValueError(f"Tool ya registrada: {spec.name}")
         self._tools[spec.name] = spec
+        self._niveles_originales[spec.name] = spec.level
 
     def activar_grupo(self, grupo: str) -> list[str]:
         """Habilita un grupo de tools; devuelve sus nombres. Solo dura lo que este registro."""
@@ -113,6 +115,32 @@ class ToolRegistry:
         if not self._visible(spec):
             raise ToolDenied(f"La herramienta {name} no está habilitada todavía")
         return spec
+
+    def spec_de(self, name: str) -> ToolSpec | None:
+        """Como get(), pero sin la comprobación de visibilidad por grupo: para inspeccionar o
+        reconfigurar una tool (p. ej. su nivel), no para ejecutarla."""
+        return self._tools.get(name)
+
+    def aplicar_overrides(self, niveles: dict[str, Level]) -> None:
+        """El dueño puede volver más estricta (auto->propone) o más laxa (propone->auto) una tool
+        desde el chat, pero nunca una prohibida: ese techo solo lo cambia el código. Se compara
+        siempre contra el nivel original, no contra el efectivo: así da igual el orden o cuántas
+        veces se llame."""
+        for nombre, nivel in niveles.items():
+            original = self._niveles_originales.get(nombre)
+            if original is None or original is Level.PROHIBIDO or nivel is Level.PROHIBIDO:
+                continue
+            self._tools[nombre] = replace(self._tools[nombre], level=nivel)
+
+    def quitar_override(self, nombre: str) -> None:
+        """Vuelve una tool a su nivel original. No hace nada si no estaba registrada."""
+        original = self._niveles_originales.get(nombre)
+        if original is not None:
+            self._tools[nombre] = replace(self._tools[nombre], level=original)
+
+    def niveles(self) -> dict[str, Level]:
+        """Nivel efectivo de cada tool visible (ni las prohibidas ni las de un grupo sin activar)."""
+        return {s.name: s.level for s in self._tools.values() if s.level is not Level.PROHIBIDO and self._visible(s)}
 
     def definiciones(self) -> list[dict[str, Any]]:
         """Esquemas para el LLM. Ni las prohibidas ni las de grupos sin activar se le muestran."""

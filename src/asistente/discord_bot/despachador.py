@@ -34,7 +34,9 @@ class Despachador:
 
     async def manejar(
         self, *, user_id: int, guild_id: int | None, channel_id: int, es_bot: bool, texto: str
-    ) -> str | None:
+    ) -> ResultadoAgente | None:
+        """Devuelve el resultado completo (no solo el texto): el llamador decide cómo mostrar,
+        por ejemplo, las propuestas pendientes de aprobación (eso sí es cosa de discord.py)."""
         # Se vuelve a comprobar aquí aunque el bot ya lo haya hecho: defensa en profundidad.
         if not self.atiende(
             user_id=user_id, guild_id=guild_id, channel_id=channel_id, es_bot=es_bot
@@ -49,4 +51,4 @@ class Despachador:
         # pasos == 0 significa pausa o LLM caído: no tiene sentido recordarlo como conversación.
         if resultado.pasos > 0:
             self._historial.agregar(channel_id, texto, resultado.respuesta)
-        return resultado.respuesta
+        return resultado
