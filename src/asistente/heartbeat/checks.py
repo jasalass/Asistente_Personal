@@ -135,6 +135,25 @@ def _eventos_suspendidos(
     return avisos
 
 
+def proxima_ocurrencia(actual: datetime, dias: list[int], ahora: datetime, tz: ZoneInfo) -> datetime:
+    """La primera vez, después de `ahora`, que cae en uno de `dias` a la misma hora local."""
+    local = actual.astimezone(tz)
+    for desfase in range(8):
+        dia = (ahora.astimezone(tz) + timedelta(days=desfase)).date()
+        candidato = datetime.combine(dia, local.time(), tzinfo=tz)
+        if dia.isoweekday() in dias and candidato > ahora:
+            return candidato
+    raise ValueError("un recordatorio recurrente debe tener al menos un día")
+
+
+def _confirmar_recordatorio(conn: Conn, r, ahora: datetime, tz: ZoneInfo) -> None:
+    repo = RecordatorioRepo(conn)
+    if r.repite_dias:
+        repo.avanzar(r.id, proxima_ocurrencia(r.fecha, r.repite_dias, ahora, tz))
+    else:
+        repo.marcar_enviado(r.id)
+
+
 def _recordatorios(conn: Conn, ahora: datetime, tz: ZoneInfo) -> list[Aviso]:
     avisos = []
     for r in RecordatorioRepo(conn).vencidos(ahora):
@@ -143,9 +162,9 @@ def _recordatorios(conn: Conn, ahora: datetime, tz: ZoneInfo) -> list[Aviso]:
             texto += f" (era para el {r.fecha.astimezone(tz):%d/%m a las %H:%M})"
         avisos.append(
             Aviso(
-                clave=f"rec:{r.id}",
+                clave=f"rec:{r.id}:{r.fecha.isoformat()}",
                 texto=texto,
-                confirmar=lambda c, rid=r.id: RecordatorioRepo(c).marcar_enviado(rid),
+                confirmar=lambda c, r=r: _confirmar_recordatorio(c, r, ahora, tz),
             )
         )
     return avisos

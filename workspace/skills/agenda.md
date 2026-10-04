@@ -11,3 +11,7 @@
 - Algo que ocurre una sola vez y solo hay que recordar (sin ser una cita con hora y lugar): `crear_recordatorio`. Para quitar uno: `cancelar_recordatorio` (por su texto, sin buscar antes). Un evento recurrente no se cancela: se pausa con `actualizar_evento`.
 
 - Si el resultado de `crear_recordatorio` o `crear_evento` trae `advertencia` o `advertencia_choque`, díselo al usuario con las mismas palabras (qué se cruza y a qué hora) y ofrécele moverlo. Lo hayas guardado o no, no lo calles.
+
+- **Recordatorios que se repiten** ("todos los lunes recuérdame pagar la luz"): usa `crear_recordatorio`
+  con `repetir` (los días) y `fecha` = la primera vez, tomada de la lista de fechas del contexto. Si el
+  resultado trae `resumen`, repítelo tal cual. Para dejar de repetirlo, `cancelar_recordatorio`.

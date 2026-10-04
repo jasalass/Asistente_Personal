@@ -201,7 +201,14 @@ class ConfigurarNivelArgs(_SinNulos):
 
 class CrearRecordatorioArgs(_SinNulos):
     texto: str = Field(min_length=1, max_length=500)
-    fecha: FechaHoraLocal
+    fecha: FechaHoraLocal = Field(
+        description="Primera vez que avisa (fecha y hora local). Si se repite, la primera ocurrencia."
+    )
+    repetir: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description="SOLO si se repite cada semana ('todos los lunes'): días. Sin valor = una sola vez.",
+    )
 
 
 class CancelarRecordatorioArgs(_SinNulos):
@@ -420,10 +427,15 @@ def construir_registro(
     def buscar_memorias(consulta, limite=5):
         return [m.model_dump(mode="json") for m in memorias.buscar(consulta, limite)]
 
-    def crear_recordatorio(texto, fecha):
+    def crear_recordatorio(texto, fecha, repetir=None):
         cuando = fecha_hora(fecha)
         coinciden = choques(cuando.astimezone(tz))  # antes de crearlo, para no chocar consigo mismo
-        resultado = recordatorios.crear(texto, cuando).model_dump(mode="json")
+        dias = dias_a_numeros(repetir) if repetir else None
+        resultado = recordatorios.crear(texto, cuando, dias).model_dump(mode="json")
+        if dias:
+            nombres = [DIAS[d - 1] + ("s" if d >= 6 else "") for d in dias]
+            hora = f"{cuando.astimezone(tz):%H:%M}"
+            resultado["resumen"] = f"Recordatorio «{texto}» todos los {', '.join(nombres)} a las {hora}"
         if coinciden:
             resultado["advertencia"] = (
                 "Coincide con: " + "; ".join(coinciden) + ". Avísale al usuario del choque de horario."

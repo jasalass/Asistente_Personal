@@ -242,6 +242,7 @@ class Recordatorio(BaseModel):
     fecha: datetime
     enviado: bool
     creado_en: datetime
+    repite_dias: list[int] | None = None  # ISO 1=lunes..7=domingo; None = de una sola vez
 
 
 class AccionPendiente(BaseModel):
