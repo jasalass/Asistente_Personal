@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from asistente.agenda.feriados import CalendarioFeriados, Feriados
 from asistente.agenda.ocurrencias import Ocurrencia, ocurrencia
+from asistente.brief.matutino import clave_brief, construir_brief
 from asistente.db.connection import Conn
 from asistente.db.models import EventoTipo, Proceso
 from asistente.db.repos.acciones_pendientes import AccionesPendientesRepo
@@ -41,6 +42,7 @@ def recolectar(
     hora_inicio: int = 8,
     hora_fin: int = 21,
     feriados: CalendarioFeriados | None = None,
+    brief_hora: int | None = None,  # None = brief desactivado
 ) -> list[Aviso]:
     """Avisos pendientes.
 
@@ -56,7 +58,23 @@ def recolectar(
         avisos += _fecha_limite(conn, ahora, tz)
         avisos += _chequeos(conn, ahora)
         avisos += _acciones_vencidas(conn, ahora)
+    if brief_hora is not None:
+        avisos += _brief(conn, ahora, tz, feriados, brief_hora, hora_fin)
     return avisos
+
+
+def _brief(
+    conn: Conn, ahora: datetime, tz: ZoneInfo, feriados: CalendarioFeriados,
+    brief_hora: int, hora_fin: int,
+) -> list[Aviso]:
+    """El brief matutino: una vez al día, desde su hora y mientras sea de día."""
+    local = ahora.astimezone(tz)
+    if not (brief_hora <= local.hour < hora_fin):
+        return []
+    clave = clave_brief(local.date())
+    if AuditoriaRepo(conn).aviso_ya_enviado(clave):
+        return []
+    return [Aviso(clave=clave, texto=construir_brief(conn, ahora, tz, feriados), confirmar=_sin_accion)]
 
 
 def _ocurrencias_de_hoy(

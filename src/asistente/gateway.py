@@ -84,6 +84,7 @@ def construir_bot(
                 intervalo_s=cfg.heartbeat_intervalo_s,
                 hora_inicio=cfg.aviso_hora_inicio,
                 hora_fin=cfg.aviso_hora_fin,
+                brief_hora=cfg.brief_hora if cfg.brief_activo else None,
             )
 
     vigia_fn = vigia_ahora_fn = None

@@ -265,6 +265,13 @@ en el chat aparece un mensaje con botones **Aprobar** / **Rechazar**. Nada pasa 
 - Hoy ninguna tool nace en `propone`: es infraestructura lista para cuando lleguen acciones que
   sí ameriten pedir permiso (enviar un correo, tocar un calendario externo, Fase 2).
 
+### Brief matutino
+
+Una vez al día, desde `BRIEF_HORA` (por defecto 08:00), el bot publica en el canal de avisos el
+resumen del día: la agenda de hoy, los procesos con próxima acción para hoy o vencida, y las fechas
+límite de los próximos tres días. Es plantilla pura: no gasta tokens. Si el bot estaba apagado a esa
+hora, lo envía al volver ese mismo día. `BRIEF_ACTIVO=false` lo apaga.
+
 ### Instancia única y avisos de estado
 
 Solo **un** proceso del asistente puede estar activo a la vez (un bloqueo de sesión en Postgres). Si
@@ -383,7 +390,7 @@ vigía publica en `#vigia-temas` un embed por artículo: **título, resumen y li
 - [x] Heartbeat: chequeo proactivo de procesos y recordatorios
 - [x] Vigía de temas (Tavily) con resumen parafraseado, link y deduplicación
 - [x] Agenda: eventos recurrentes con feriados, excepciones por fecha, `listar_agenda` y avisos previos
-- [ ] Brief matutino en `#brief` con la agenda del día
+- [x] Brief matutino con la agenda del día, procesos que vencen y fechas límite (sin tokens)
 - [ ] Google Calendar / Gmail, Microsoft Graph
 - [ ] Acciones acotadas con guardrails (whitelist, modo "propone, no ejecuta", auditoría)
 - [ ] Desplegar 24/7 en una VM `e2-micro` de GCP (nivel gratis permanente) — guía en `deploy/gcp/GUIA.md`

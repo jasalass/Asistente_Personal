@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     heartbeat_intervalo_s: int = Field(default=60, ge=30)
     aviso_hora_inicio: int = Field(default=8, ge=0, le=23)  # horario diurno, hora local
     aviso_hora_fin: int = Field(default=21, ge=1, le=24)
+    brief_activo: bool = True  # brief matutino: una vez al día, sin tokens
+    brief_hora: int = Field(default=8, ge=0, le=23)
 
     timezone: str = "America/Santiago"
 

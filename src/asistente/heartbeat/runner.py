@@ -27,6 +27,7 @@ async def ciclo(
     abrir: AbrirConexion = transaccion,
     hora_inicio: int = 8,
     hora_fin: int = 21,
+    brief_hora: int | None = None,
 ) -> int:
     """Un latido: recoge avisos, los envía y confirma cada uno solo si el envío salió bien.
 
@@ -40,7 +41,9 @@ async def ciclo(
         with abrir() as conn:
             if EstadoSistemaRepo(conn).pausado():
                 return []
-            return recolectar(conn, ahora, tz, hora_inicio=hora_inicio, hora_fin=hora_fin)
+            return recolectar(
+                conn, ahora, tz, hora_inicio=hora_inicio, hora_fin=hora_fin, brief_hora=brief_hora
+            )
 
     def confirmar(aviso: Aviso) -> None:
         with abrir() as conn:
@@ -83,6 +86,7 @@ async def latido(
     intervalo_s: int,
     hora_inicio: int,
     hora_fin: int,
+    brief_hora: int | None = None,
 ) -> None:
     """Bucle infinito. Ningún error, de la base o de Discord, lo termina."""
     log.info("Heartbeat activo (cada %s s)", intervalo_s)
@@ -94,6 +98,7 @@ async def latido(
                 ahora=datetime.now(UTC),
                 hora_inicio=hora_inicio,
                 hora_fin=hora_fin,
+                brief_hora=brief_hora,
             )
         except psycopg.OperationalError:
             # Sin red o base inalcanzable: es transitorio, no un error del programa.
