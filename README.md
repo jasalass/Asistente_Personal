@@ -272,6 +272,13 @@ resumen del día: la agenda de hoy, los procesos con próxima acción para hoy o
 límite de los próximos tres días. Es plantilla pura: no gasta tokens. Si el bot estaba apagado a esa
 hora, lo envía al volver ese mismo día. `BRIEF_ACTIVO=false` lo apaga.
 
+### Respaldo de tus datos
+
+`python -m asistente.respaldo` exporta procesos, memorias, recordatorios, agenda, vigía y ajustes de
+autoridad a `respaldos/respaldo-AAAAMMDD-HHMMSS.json`. Solo lee la base, y la carpeta no se sube a git.
+Ejecútalo cada cierto tiempo, o cuando quieras una copia antes de cambiar algo. Los registros de
+ejecución y las trazas no se respaldan: crecen mucho y se regeneran.
+
 ### Instancia única y avisos de estado
 
 Solo **un** proceso del asistente puede estar activo a la vez (un bloqueo de sesión en Postgres). Si

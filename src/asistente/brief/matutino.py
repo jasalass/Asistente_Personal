@@ -30,8 +30,13 @@ def construir_brief(
     hoy = ahora.astimezone(tz).date()
     partes = [f"**Brief de {nombre_dia(hoy)} {hoy:%d/%m}**"]
 
-    dias = consultar(conn, hoy, 1, tz, feriados)
-    partes.append("**Agenda de hoy**\n" + redactar(dias, ConsultaDeAgenda(hoy, 1, "hoy"), hoy))
+    if hoy.isoweekday() == 1:
+        # Los lunes, la semana completa: es el momento de planear, no solo de ver el día.
+        dias = consultar(conn, hoy, 7, tz, feriados)
+        partes.append("**Agenda de la semana**\n" + redactar(dias, ConsultaDeAgenda(hoy, 7, "esta semana"), hoy))
+    else:
+        dias = consultar(conn, hoy, 1, tz, feriados)
+        partes.append("**Agenda de hoy**\n" + redactar(dias, ConsultaDeAgenda(hoy, 1, "hoy"), hoy))
 
     repo = ProcesoRepo(conn)
     fin_de_hoy = datetime.combine(hoy + timedelta(days=1), time.min, tzinfo=tz)

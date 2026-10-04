@@ -39,7 +39,7 @@ def test_brief_incluye_agenda_procesos_y_fechas_limite(conn):
 
 def test_brief_sin_nada_igual_se_envia_y_lo_dice(conn):
     texto = construir_brief(conn, AHORA, TZ, FeriadosFalsos())
-    assert "No tienes nada agendado para hoy." in texto
+    assert "No tienes nada agendado para esta semana." in texto  # AHORA es lunes
 
 
 def test_proceso_cerrado_no_aparece(conn):
@@ -72,3 +72,24 @@ def test_brief_desactivado_no_sale(conn):
 def test_brief_no_sale_de_madrugada(conn):
     de_noche = datetime(2026, 9, 22, 2, 0, tzinfo=UTC)  # 23:00 en Chile
     assert not [a for a in recolectar(conn, de_noche, TZ, brief_hora=8) if a.clave.startswith("brief:")]
+
+
+def test_el_brief_del_lunes_muestra_la_semana_completa(conn):
+    from asistente.db.models import EventoNuevo
+    from asistente.db.repos.agenda import EventoRepo
+
+    # AHORA es lunes 21/09; un evento el miércoles aparece el lunes, no en un brief de un martes.
+    EventoRepo(conn).crear(EventoNuevo(nombre="Clase miércoles", dias_semana=[3], hora=time(9, 0)))
+    texto = construir_brief(conn, AHORA, TZ, FeriadosFalsos())
+    assert "**Agenda de la semana**" in texto
+    assert "Clase miércoles" in texto
+
+
+def test_el_brief_de_otro_dia_solo_muestra_hoy(conn):
+    from asistente.db.models import EventoNuevo
+    from asistente.db.repos.agenda import EventoRepo
+
+    EventoRepo(conn).crear(EventoNuevo(nombre="Clase miércoles", dias_semana=[3], hora=time(9, 0)))
+    martes = datetime(2026, 9, 22, 15, 0, tzinfo=UTC)
+    texto = construir_brief(conn, martes, TZ, FeriadosFalsos())
+    assert "**Agenda de hoy**" in texto and "Clase miércoles" not in texto
